@@ -1,0 +1,465 @@
+// Copyright 2020-2026 Tauri Programme within The Commons Conservancy
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-License-Identifier: MIT
+
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use servo::{CookieSource, StorageType, UrlRequest};
+use tao::{event_loop::EventLoopProxy, window::Window};
+use url::Url;
+
+use crate::{Rect, ServoError as Error, ServoResult as Result, WebViewId, RGBA};
+use crate::{WebViewAttributes, WebViewBuilder};
+
+use self::embedder::Embedder;
+
+pub mod embedder;
+
+fn parse_url(url: &str, description: &str) -> Result<Url> {
+  Url::parse(url).map_err(|error| Error::Servo(format!("invalid {description}: {error}")))
+}
+
+fn html_url(html: &str) -> Result<Url> {
+  parse_url(
+    &format!(
+      "data:text/html;charset=utf-8,{}",
+      utf8_percent_encode(html, NON_ALPHANUMERIC)
+    ),
+    "HTML data URL",
+  )
+}
+
+fn servo_color((red, green, blue, alpha): RGBA) -> [f64; 4] {
+  [red, green, blue, alpha].map(|component| component as f64 / 255.0)
+}
+
+pub struct InnerWebView {
+  id: String,
+  embedder: Embedder,
+}
+
+impl InnerWebView {
+  pub(crate) fn embedder(&self) -> &Embedder {
+    &self.embedder
+  }
+
+  fn new_servo(
+    window: Window,
+    proxy: EventLoopProxy<()>,
+    attributes: WebViewAttributes<'_>,
+  ) -> Result<Self> {
+    crate::install_rustls_crypto_provider();
+    let id = attributes.id.unwrap_or("servo").to_owned();
+    let (initial_url, initial_headers) = match attributes.url {
+      Some(url) => (parse_url(&url, "initial URL")?, attributes.headers),
+      None => (
+        if let Some(html) = attributes.html {
+          html_url(&html)?
+        } else {
+          let demo_path = std::env::current_dir()?.join("examples/demo.html");
+          Url::from_file_path(&demo_path).map_err(|()| {
+            Error::Servo(format!(
+              "failed to convert demo path to URL: {}",
+              demo_path.display()
+            ))
+          })?
+        },
+        None,
+      ),
+    };
+
+    let background_color = if attributes.transparent {
+      Some([0.0; 4])
+    } else {
+      attributes.background_color.map(servo_color)
+    };
+    let initialization_scripts = attributes.initialization_scripts;
+    let ipc_handler = attributes.ipc_handler;
+    let custom_protocols = attributes.custom_protocols;
+    let navigation_handler = attributes.navigation_handler;
+    let document_title_changed_handler = attributes.document_title_changed_handler;
+    let on_page_load_handler = attributes.on_page_load_handler;
+    window.set_visible(attributes.visible);
+
+    let embedder = Embedder::new(
+      window,
+      proxy,
+      id.clone(),
+      initial_url,
+      initial_headers,
+      background_color,
+      initialization_scripts,
+      ipc_handler,
+      custom_protocols,
+      navigation_handler,
+      document_title_changed_handler,
+      on_page_load_handler,
+    )?;
+    Ok(Self { id, embedder })
+  }
+
+  fn new_servo_as_child(
+    parent: &Window,
+    wake: impl Fn() + Send + Sync + 'static,
+    attributes: WebViewAttributes<'_>,
+  ) -> Result<Self> {
+    crate::install_rustls_crypto_provider();
+    let id = attributes.id.unwrap_or("servo").to_owned();
+    let (initial_url, initial_headers) = match attributes.url {
+      Some(url) => (parse_url(&url, "initial URL")?, attributes.headers),
+      None => (
+        if let Some(html) = attributes.html {
+          html_url(&html)?
+        } else {
+          let demo_path = std::env::current_dir()?.join("examples/demo.html");
+          Url::from_file_path(&demo_path).map_err(|()| {
+            Error::Servo(format!(
+              "failed to convert demo path to URL: {}",
+              demo_path.display()
+            ))
+          })?
+        },
+        None,
+      ),
+    };
+    let background_color = if attributes.transparent {
+      Some([0.0; 4])
+    } else {
+      attributes.background_color.map(servo_color)
+    };
+    let visible = attributes.visible;
+    let bounds = attributes.bounds.unwrap_or_default();
+    let initialization_scripts = attributes.initialization_scripts;
+    let ipc_handler = attributes.ipc_handler;
+    let custom_protocols = attributes.custom_protocols;
+    let navigation_handler = attributes.navigation_handler;
+    let document_title_changed_handler = attributes.document_title_changed_handler;
+    let on_page_load_handler = attributes.on_page_load_handler;
+    let embedder = Embedder::new_child(
+      parent,
+      wake,
+      id.clone(),
+      bounds,
+      initial_url,
+      initial_headers,
+      background_color,
+      initialization_scripts,
+      ipc_handler,
+      custom_protocols,
+      navigation_handler,
+      document_title_changed_handler,
+      on_page_load_handler,
+    )?;
+    if !visible {
+      embedder.set_visible(false);
+    }
+    Ok(Self { id, embedder })
+  }
+
+  pub fn id(&self) -> WebViewId<'_> {
+    &self.id
+  }
+
+  pub fn print(&self) -> Result<()> {
+    Err(Error::Servo(
+      "printing is not supported by Servo's embedding API".into(),
+    ))
+  }
+
+  pub fn url(&self) -> Result<String> {
+    Ok(
+      self
+        .embedder
+        .webview()
+        .url()
+        .map(|url| url.to_string())
+        .unwrap_or_default(),
+    )
+  }
+
+  pub fn eval(
+    &self,
+    js: &str,
+    callback: Option<impl FnOnce(String) + Send + 'static>,
+  ) -> Result<()> {
+    self
+      .embedder
+      .webview()
+      .evaluate_javascript(js, move |result| {
+        if let Some(callback) = callback {
+          callback(match result {
+            Ok(value) => format!("{value:?}"),
+            Err(error) => format!("{error:?}"),
+          });
+        }
+      });
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  /// Evaluate a script without a callback.
+  pub fn evaluate_script(&self, js: &str) -> Result<()> {
+    self.eval(js, None::<fn(String)>)
+  }
+
+  /// Evaluate a script with a callback.
+  pub fn evaluate_script_with_callback(
+    &self,
+    js: &str,
+    callback: impl FnOnce(String) + Send + 'static,
+  ) -> Result<()> {
+    self.eval(js, Some(callback))
+  }
+
+  pub fn cookies_for_url(&self, url: &str) -> Result<Vec<cookie::Cookie<'static>>> {
+    let url = parse_url(url, "cookie URL")?;
+    Ok(
+      self
+        .embedder
+        .servo()
+        .site_data_manager()
+        .cookies_for_url(url, CookieSource::HTTP),
+    )
+  }
+
+  pub fn cookies(&self) -> Result<Vec<cookie::Cookie<'static>>> {
+    Err(Error::Servo(
+      "enumerating every cookie is not supported by Servo; use cookies_for_url instead".into(),
+    ))
+  }
+
+  pub fn set_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<()> {
+    let url = self.url_for_cookie(cookie)?;
+    self
+      .embedder
+      .servo()
+      .site_data_manager()
+      .set_cookie_for_url(url, cookie.clone().into_owned(), None);
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn delete_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<()> {
+    let url = self.url_for_cookie(cookie)?;
+    let mut cookie = cookie.clone().into_owned();
+    cookie.make_removal();
+    self
+      .embedder
+      .servo()
+      .site_data_manager()
+      .set_cookie_for_url(url, cookie, None);
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  #[cfg(any(debug_assertions, feature = "devtools"))]
+  pub fn open_devtools(&self) {}
+
+  #[cfg(any(debug_assertions, feature = "devtools"))]
+  pub fn close_devtools(&self) {}
+
+  #[cfg(any(debug_assertions, feature = "devtools"))]
+  pub fn is_devtools_open(&self) -> bool {
+    false
+  }
+
+  pub fn zoom(&self, scale_factor: f64) -> Result<()> {
+    self.embedder.webview().set_page_zoom(scale_factor as f32);
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn set_background_color(&self, background_color: RGBA) -> Result<()> {
+    self
+      .embedder
+      .set_background_color(servo_color(background_color));
+    Ok(())
+  }
+
+  pub fn load_url(&self, url: &str) -> Result<()> {
+    let url = Url::parse(url).map_err(|error| Error::Servo(format!("invalid URL: {error}")))?;
+    self.embedder.webview().load(url);
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn reload(&self) -> Result<()> {
+    self.embedder.webview().reload();
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn go_forward(&self) -> Result<()> {
+    if self.embedder.webview().can_go_forward() {
+      self.embedder.webview().go_forward(1);
+      self.embedder.servo().spin_event_loop();
+    }
+    Ok(())
+  }
+
+  pub fn go_back(&self) -> Result<()> {
+    if self.embedder.webview().can_go_back() {
+      self.embedder.webview().go_back(1);
+      self.embedder.servo().spin_event_loop();
+    }
+    Ok(())
+  }
+
+  pub fn can_go_forward(&self) -> Result<bool> {
+    Ok(self.embedder.webview().can_go_forward())
+  }
+
+  pub fn can_go_back(&self) -> Result<bool> {
+    Ok(self.embedder.webview().can_go_back())
+  }
+
+  pub fn load_url_with_headers(&self, url: &str, headers: http::HeaderMap) -> Result<()> {
+    let url = parse_url(url, "URL")?;
+    self
+      .embedder
+      .webview()
+      .load_request(UrlRequest::new(url).headers(headers));
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn load_html(&self, html: &str) -> Result<()> {
+    let url = html_url(html)?;
+    self.embedder.webview().load(url);
+    self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn clear_all_browsing_data(&self) -> Result<()> {
+    let servo = self.embedder.servo();
+    let site_data_manager = servo.site_data_manager();
+    site_data_manager.clear_cookies(None);
+
+    let storage_types = StorageType::Local | StorageType::Session;
+    let sites = site_data_manager.site_data(storage_types);
+    let site_names = sites.iter().map(|site| site.name()).collect::<Vec<_>>();
+    let site_names = site_names.iter().map(String::as_str).collect::<Vec<_>>();
+    site_data_manager.clear_site_data(&site_names, storage_types);
+    servo.network_manager().clear_cache();
+    servo.spin_event_loop();
+    Ok(())
+  }
+
+  pub fn bounds(&self) -> Result<Rect> {
+    Ok(self.embedder.bounds())
+  }
+
+  pub fn set_bounds(&self, bounds: Rect) -> Result<()> {
+    self.embedder.set_bounds(bounds);
+    Ok(())
+  }
+
+  pub fn set_visible(&self, visible: bool) -> Result<()> {
+    self.embedder.set_visible(visible);
+    Ok(())
+  }
+
+  pub fn focus(&self) -> Result<()> {
+    self.embedder.focus();
+    Ok(())
+  }
+
+  pub fn focus_parent(&self) -> Result<()> {
+    self.embedder.focus_parent()
+  }
+
+  fn url_for_cookie(&self, cookie: &cookie::Cookie<'_>) -> Result<Url> {
+    let current_url = self
+      .embedder
+      .webview()
+      .url()
+      .ok_or_else(|| Error::Servo("cannot set a cookie before Servo has a current URL".into()))?;
+    let Some(domain) = cookie.domain() else {
+      return Ok(current_url);
+    };
+
+    let domain = domain.trim_start_matches('.');
+    let current_host_matches = current_url
+      .host_str()
+      .is_some_and(|host| host == domain || host.ends_with(&format!(".{domain}")));
+    let secure = cookie.secure().unwrap_or(false);
+    if current_host_matches && (!secure || current_url.scheme() == "https") {
+      return Ok(current_url);
+    }
+
+    let scheme = if secure { "https" } else { "http" };
+    let path = cookie.path().unwrap_or("/");
+    parse_url(&format!("{scheme}://{domain}{path}"), "cookie URL")
+  }
+}
+
+pub fn platform_webview_version() -> Result<String> {
+  Ok("Servo main (3f08ca6d)".into())
+}
+
+pub trait WebViewBuilderExtServo<'a> {
+  /// Creates a top-level Servo webview that owns its Tao window.
+  fn build_servo(self, window: Window, proxy: EventLoopProxy<()>) -> Result<super::WebView>;
+
+  /// Creates a Servo webview rendered into a region of a borrowed Tao window.
+  ///
+  /// The host must invoke `wake` by scheduling work on the thread that owns Servo, then call
+  /// `handle_user_event` on the value returned by [`WebViewExtServo::servo`] from that event.
+  /// Window events must likewise be forwarded through `handle_window_event`. Only one embedded
+  /// Servo webview per native window is currently supported.
+  fn build_servo_as_child(
+    self,
+    parent: &Window,
+    wake: impl Fn() + Send + Sync + 'static,
+  ) -> Result<super::WebView>;
+}
+
+impl<'a> WebViewBuilderExtServo<'a> for WebViewBuilder<'a> {
+  fn build_servo(self, window: Window, proxy: EventLoopProxy<()>) -> Result<super::WebView> {
+    self.error?;
+    InnerWebView::new_servo(window, proxy, self.attrs).map(|webview| super::WebView { webview })
+  }
+
+  fn build_servo_as_child(
+    self,
+    parent: &Window,
+    wake: impl Fn() + Send + Sync + 'static,
+  ) -> Result<super::WebView> {
+    self.error?;
+    InnerWebView::new_servo_as_child(parent, wake, self.attrs)
+      .map(|webview| super::WebView { webview })
+  }
+}
+
+pub trait WebViewExtServo {
+  fn servo(&self) -> &Embedder;
+}
+
+impl WebViewExtServo for super::WebView {
+  fn servo(&self) -> &Embedder {
+    &self.webview.embedder
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{html_url, servo_color};
+
+  #[test]
+  fn html_is_encoded_as_an_opaque_data_url() {
+    let url = html_url("<p id=\"value\">#100%</p>").unwrap();
+
+    assert_eq!(url.scheme(), "data");
+    assert!(matches!(url.origin(), url::Origin::Opaque(_)));
+    assert!(url.fragment().is_none());
+    assert!(url.as_str().contains("%23"));
+    assert!(url.as_str().contains("%25"));
+  }
+
+  #[test]
+  fn converts_color_components_to_servo_range() {
+    assert_eq!(
+      servo_color((0, 127, 255, 64)),
+      [0.0, 127.0 / 255.0, 1.0, 64.0 / 255.0]
+    );
+  }
+}
