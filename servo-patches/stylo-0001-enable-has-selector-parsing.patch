@@ -1,0 +1,31 @@
+Enable :has() selector parsing in stylo's Servo selector parser.
+
+This targets the STYLO repository (https://github.com/servo/stylo), not
+servo — it sits outside the numbered servo series. Stylo ships the full
+:has() matching and relative-selector invalidation machinery (Gecko uses
+it in production); the Servo-mode parser just declines to parse the
+selector. Flipping the switch was validated end-to-end in the Copse
+prototype on Linux against stylo rev 2d289c14: CSS.supports("selector(
+:has(a))") reports true, a live `#box:has(span.present)` rule matches,
+and dynamic invalidation works — toggling the matching child in and out
+of the DOM restyles the parent both directions with no relayout glue on
+the servo side. Upstream this belongs either as-is (if Servo is ready to
+ship :has()) or behind a Servo pref threaded through ParserContext.
+
+To try it: check out stylo at the rev pinned in servo's Cargo.lock,
+apply, and add a [patch."https://github.com/servo/stylo"] section
+redirecting stylo, selectors, servo_arc, stylo_atoms, stylo_derive,
+stylo_dom, stylo_malloc_size_of, stylo_static_prefs, stylo_traits,
+to_shmem and to_shmem_derive at the local checkout.
+
+--- a/style/servo/selector_parser.rs
++++ b/style/servo/selector_parser.rs
+@@ -594,7 +594,7 @@
+ 
+     #[inline]
+     fn parse_has(&self) -> bool {
+-        false
++        true
+     }
+ 
+     #[inline]

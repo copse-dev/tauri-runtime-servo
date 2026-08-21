@@ -131,6 +131,16 @@ servo = { path = "../servo/components/servo" }
   presentation-attribute fallbacks recreated for Copse's titlebar icons
   become unnecessary (they remain harmless).
 
+- **stylo-0001 — enable `:has()` selector parsing (STYLO repo, out of
+  series).** Stylo ships complete `:has()` matching and invalidation
+  (Gecko production code); Servo-mode parsing is a hardcoded `false` in
+  `style/servo/selector_parser.rs`. Flipping it was validated end-to-end
+  on Linux: `CSS.supports` reports the selector, live rules match, and
+  dynamic invalidation restyles the parent when matching children are
+  added or removed. Applies to the stylo repo at servo's pinned rev, via
+  a `[patch."https://github.com/servo/stylo"]` section (the patch file
+  lists the eleven crates to redirect).
+
 - **0007 — script: fall back to generic sans-serif for SVG text font
   resolution.** The rasterizer substitutes fonts per-glyph only after a
   base font resolves for a text span; when `SvgFontResolver` returns
