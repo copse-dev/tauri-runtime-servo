@@ -1,0 +1,132 @@
+From 86e93718a8b9f8621e7736e7bd36d8e0d1b799fb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 21 Aug 2026 12:09:51 +0000
+Subject: [PATCH] Honor embedder-registered secure schemes in secure-context
+ checks
+
+Custom protocols registered through ProtocolHandler::is_secure() were only
+honored by the fetch layer (is_url_potentially_trustworthy); script's
+GlobalScope::is_secure_context() reaches ServoUrl::is_potentially_trustworthy,
+where a non-special scheme's opaque origin can never be trustworthy. As a
+result, [SecureContext] APIs (crypto.randomUUID, crypto.subtle, ...) were
+absent on embedder-served pages such as tauri://localhost even when the
+embedder declared the protocol secure.
+
+Register secure schemes from the merged ProtocolRegistry into a process-global
+set in servo_url at startup, and consult it in
+ServoUrl::is_potentially_trustworthy.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018Jf9dnzfAnoLzptgcNbxDy
+---
+ components/net/protocols/mod.rs | 11 ++++++++++
+ components/servo/servo.rs       |  8 +++++++
+ components/url/lib.rs           | 37 +++++++++++++++++++++++++++++++++
+ 3 files changed, 56 insertions(+)
+
+diff --git a/components/net/protocols/mod.rs b/components/net/protocols/mod.rs
+index fbc2d68fa..ac14bbd1f 100644
+--- a/components/net/protocols/mod.rs
++++ b/components/net/protocols/mod.rs
+@@ -158,6 +158,17 @@ impl ProtocolRegistry {
+             .is_some_and(|handler| handler.is_secure())
+     }
+ 
++    /// Schemes whose handlers declared themselves secure-context capable
++    /// ([`ProtocolHandler::is_secure`]). The embedding layer feeds these to
++    /// `servo_url::register_secure_scheme` so script's secure-context
++    /// computation agrees with the fetch layer.
++    pub fn secure_schemes(&self) -> impl Iterator<Item = &str> {
++        self.handlers
++            .iter()
++            .filter(|(_, handler)| handler.is_secure())
++            .map(|(scheme, _)| scheme.as_str())
++    }
++
+     pub fn privileged_urls(&self) -> Vec<ServoUrl> {
+         self.handlers
+             .iter()
+diff --git a/components/servo/servo.rs b/components/servo/servo.rs
+index b08d06e85..a1989fe91 100644
+--- a/components/servo/servo.rs
++++ b/components/servo/servo.rs
+@@ -946,6 +946,14 @@ impl Servo {
+         // layout, as well as the navigation context.
+         let mut protocols = ProtocolRegistry::with_internal_protocols();
+         protocols.merge(builder.protocol_registry);
++        // Let script's secure-context computation (GlobalScope::is_secure_context,
++        // which reaches ServoUrl::is_potentially_trustworthy) see the same
++        // embedder security declarations the fetch layer honors - without this,
++        // [SecureContext] APIs are absent on custom-protocol pages even when the
++        // handler is registered with is_secure().
++        for scheme in protocols.secure_schemes() {
++            servo_url::register_secure_scheme(scheme);
++        }
+ 
+         // The `Paint` coordinates with the client window to create the final
+         // rendered page and display it somewhere.
+diff --git a/components/url/lib.rs b/components/url/lib.rs
+index 5d1620d02..617745807 100644
+--- a/components/url/lib.rs
++++ b/components/url/lib.rs
+@@ -13,6 +13,7 @@ use std::collections::hash_map::DefaultHasher;
+ use std::fmt;
+ use std::hash::Hasher;
+ use std::net::IpAddr;
++use std::sync::RwLock;
+ use std::ops::{Index, Range, RangeFrom, RangeFull, RangeTo};
+ use std::path::Path;
+ use std::str::FromStr;
+@@ -25,6 +26,33 @@ use url::{Position, Url};
+ 
+ pub use crate::origin::{ImmutableOrigin, MutableOrigin, OpaqueOrigin, OriginSnapshot};
+ 
++/// Custom schemes the embedder registered as secure-context capable
++/// (`ProtocolHandler::is_secure()`). Non-special schemes get opaque origins,
++/// which the webappsec "is origin potentially trustworthy?" algorithm can
++/// never bless - so the embedder's declaration has to be consulted at the URL
++/// level. Populated once by the embedding layer at startup.
++static EMBEDDER_SECURE_SCHEMES: RwLock<Vec<String>> = RwLock::new(Vec::new());
++
++/// Registers a scheme whose URLs should be treated as potentially trustworthy
++/// (secure-context capable). Called by the embedding layer for each custom
++/// protocol handler registered with `is_secure()`.
++pub fn register_secure_scheme(scheme: &str) {
++    let mut schemes = EMBEDDER_SECURE_SCHEMES
++        .write()
++        .expect("secure scheme registry poisoned");
++    if !schemes.iter().any(|registered| registered == scheme) {
++        schemes.push(scheme.to_owned());
++    }
++}
++
++fn is_embedder_secure_scheme(scheme: &str) -> bool {
++    EMBEDDER_SECURE_SCHEMES
++        .read()
++        .expect("secure scheme registry poisoned")
++        .iter()
++        .any(|registered| registered == scheme)
++}
++
+ const DATA_URL_DISPLAY_LENGTH: usize = 40;
+ 
+ #[derive(Debug)]
+@@ -245,6 +273,15 @@ impl ServoUrl {
+             return true;
+         }
+ 
++        // Custom protocols the embedder registered as secure
++        // (`ProtocolHandler::is_secure()`): their non-special schemes yield
++        // opaque origins, which step 3 can never bless, so honor the
++        // embedder's declaration here. This is what makes [SecureContext]
++        // APIs reachable on embedder-served pages (e.g. tauri://).
++        if is_embedder_secure_scheme(self.scheme()) {
++            return true;
++        }
++
+         // Step 3. Return the result of executing § 3.1 Is origin potentially trustworthy? on url’s origin.
+         self.origin().is_potentially_trustworthy()
+     }
+-- 
+2.43.0
+
