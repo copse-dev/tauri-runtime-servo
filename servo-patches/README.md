@@ -37,3 +37,15 @@ servo = { path = "../servo/components/servo" }
   polyfill disabled, the Copse renderer's id-minting boot path (previously
   dead without the polyfill) works on the native API under
   `tauri://localhost`.
+
+- **0002 — script: support user input in contenteditable elements.**
+  Cherry-picked from the fork branch `codex/contenteditable-user-input`
+  (authored 2026-08-02); applies cleanly to the pinned rev. Routes keyboard
+  input into `contenteditable` roots in
+  `document_event_handler.rs` — the gap that made rich-text composers
+  (e.g. Copse's chip editor) unable to accept typing under Servo.
+  *Validated end-to-end on Linux*: typing into the Copse composer, pressing
+  Send, and receiving a model reply all work in the Servo UI with this
+  applied. Known issue: under synthetic X11 input (xdotool), shift-wrapped
+  characters double-insert ("T" becomes "TT"); needs a real-keyboard repro
+  to attribute (patch logic vs key-event delivery) before fixing.
