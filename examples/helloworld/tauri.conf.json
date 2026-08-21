@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.tauri.servo.dev",
   "build": {
-    "frontendDist": ["index.html"]
+    "frontendDist": [
+      "index.html"
+    ]
   },
   "app": {
     "withGlobalTauri": true,
@@ -22,6 +24,9 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "icon": [
+      "icons/icon.png"
+    ]
   }
 }
