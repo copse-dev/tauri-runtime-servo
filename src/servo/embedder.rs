@@ -704,6 +704,13 @@ impl Embedder {
     // and editor libraries; both are standard and inert unless used.
     preferences.dom_intersection_observer_enabled = true;
     preferences.dom_composition_event_enabled = true;
+    // Variable fonts: off by default, but the full pipeline exists (CSS
+    // font-weight/-width/-optical-sizing composed into fvar coordinates,
+    // applied to shaping, metrics, and rasterization). Without it a variable
+    // TTF renders at its *default* fvar instance — for fonts whose default is
+    // the Thin master (wght min), every weight renders hairline-thin with the
+    // Thin master's spacing.
+    preferences.layout_variable_fonts_enabled = true;
 
     let mut protocol_registry = ProtocolRegistry::default();
     for (scheme, handler) in custom_protocols {

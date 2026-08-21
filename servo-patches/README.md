@@ -24,16 +24,24 @@ servo = { path = "../servo/components/servo" }
 
 ## Known engine issues (no patch yet)
 
-- **Variable-font metrics: spurious word gaps and a dead weight axis.**
-  A variable TTF (`font-weight: 100 900` via `@font-face`) renders with
-  extra advance after certain kerning pairs — "Servo" becomes "Ser vo"
-  (the `r`→`v` pair; "Working" is unaffected) — and `font-weight: 700`
-  renders identical to regular, so the weight axis is ignored. Static
-  TTFs from the same page render perfectly, isolating the bug to Servo's
-  variable-font handling (likely variation deltas misapplied to
-  kerning/advances at the default instance). Reproduced with a
-  four-family probe under the prototype; worth an upstream servo issue
-  with that reduction.
+- **Variable fonts render at the default fvar instance — resolved by a
+  pref, no patch needed.** A variable TTF (`font-weight: 100 900` via
+  `@font-face`) ignored `font-weight` entirely: every weight rendered as
+  the font's *default* fvar instance, which for fonts whose default is
+  the wght minimum (e.g. Pliant, default wght=100) means hairline-Thin
+  text with the Thin master's spacing. Root cause: Servo ships the
+  complete variations pipeline — CSS `font-weight`/`font-width`/
+  `font-optical-sizing`/`font-variation-settings` composed into fvar
+  coordinates per CSS Fonts 4, applied to HarfBuzz shaping, FreeType
+  metrics, and WebRender rasterization — but the whole path sits behind
+  `layout.variable_fonts.enabled`, which is off by default. The runtime
+  now flips that pref; weights and spacing then match Chromium on the
+  same page (validated with a shaping-trace comparison against offline
+  HarfBuzz and a four-family probe). The initially-reported "spurious
+  gap in kerning pairs" ("Servo" → "Ser vo") turned out to be a
+  characteristic of the test typeface, not an engine bug: Chromium
+  renders the identical gap (the font's `r` carries a wide advance and
+  has no r→v kern pair).
 
 ## Current series
 
