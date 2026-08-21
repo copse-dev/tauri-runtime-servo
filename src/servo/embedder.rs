@@ -520,13 +520,15 @@ fn inserted_key_text(
   if !modifiers.is_empty() {
     return None;
   }
-  if let Some(text) = text {
-    return Some(text.to_owned());
-  }
   match key {
+    // Prefer the logical key over `KeyEvent::text`: tao's X11 backend fills
+    // `text` with the unshifted character ("t" while the logical key is
+    // "T"), so a dedup keyed on `text` misses shifted characters — the
+    // matching `ReceivedImeText` then commits a second copy of every
+    // shift-modified character into editable content.
     TaoKey::Character(character) => Some((*character).to_owned()),
     TaoKey::Space => Some(" ".into()),
-    _ => None,
+    _ => text.map(ToOwned::to_owned),
   }
 }
 

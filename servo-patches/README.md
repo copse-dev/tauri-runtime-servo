@@ -46,9 +46,14 @@ servo = { path = "../servo/components/servo" }
   (e.g. Copse's chip editor) unable to accept typing under Servo.
   *Validated end-to-end on Linux*: typing into the Copse composer, pressing
   Send, and receiving a model reply all work in the Servo UI with this
-  applied. Known issue: under synthetic X11 input (xdotool), shift-wrapped
-  characters double-insert ("T" becomes "TT"); needs a real-keyboard repro
-  to attribute (patch logic vs key-event delivery) before fixing.
+  applied. The shift-wrapped double-insert ("T" became "TT") observed during
+  the first validation was traced to the runtime, not this patch: tao's X11
+  backend fills `KeyEvent::text` with the unshifted character while
+  `logical_key` is correctly translated, so the embedder's key/IME dedup
+  missed shifted characters and committed a second copy via a composition
+  event. Fixed in `tauri-runtime-servo` (`inserted_key_text` now prefers the
+  logical key); mixed-case typing with shifted symbols now inserts each
+  character exactly once in both contenteditable and textarea.
 
 - **0003 — layout: resolve currentColor in rasterized inline SVG.**
   Inline `<svg>` is XML-serialized to a `data:` URL and rasterized with no
