@@ -49,3 +49,17 @@ servo = { path = "../servo/components/servo" }
   applied. Known issue: under synthetic X11 input (xdotool), shift-wrapped
   characters double-insert ("T" becomes "TT"); needs a real-keyboard repro
   to attribute (patch logic vs key-event delivery) before fixing.
+
+- **0003 — layout: resolve currentColor in rasterized inline SVG.**
+  Inline `<svg>` is XML-serialized to a `data:` URL and rasterized with no
+  CSS context, so `currentColor` resolved to black — `currentColor` icon
+  sets rendered as solid dark shapes. Injects the element's computed CSS
+  `color` as a root attribute on the serialized document (honored by the
+  rasterizer per SVG's `color` property) unless the markup declares one;
+  the rewritten URL doubles as the cache key so rasterization is
+  per-resolved-color. *Validated on Linux* with a four-variant probe
+  (currentColor + CSS color now correct; explicit `color` attributes and
+  explicit paints unchanged) and against Copse's titlebar icon set.
+  A patch for module-worker top-level await exists uncommitted on a local
+  machine (`jkt/module-worker-top-level-await`) and joins this series as
+  0004 once pushed.
