@@ -1,4 +1,4 @@
-From 20cfa8bc8c7147f1399af36ce10e2d5ddeb6a69f Mon Sep 17 00:00:00 2001
+From 04663b1e3e4fc14495a5c1ee05ec8f4808ab5e43 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 17:04:36 +0000
 Subject: [PATCH] layout: flatten computed styles into rasterized inline SVG
@@ -50,13 +50,13 @@ transform-origin is not carried over, and subtrees cloned by <use>
 expansion keep the referenced element's id, so they flatten with the
 referenced element's at-definition styles.
 ---
- components/layout/replaced.rs              | 211 +++++++++++++++++++--
+ components/layout/replaced.rs              | 220 +++++++++++++++++++--
  components/layout/traversal.rs             |  16 ++
  components/script/dom/svg/svgsvgelement.rs |  22 +++
- 3 files changed, 234 insertions(+), 15 deletions(-)
+ 3 files changed, 243 insertions(+), 15 deletions(-)
 
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 09dda617c1..6e52a4fda6 100644
+index 09dda617c1..66859f743f 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -301,16 +301,22 @@ impl ReplacedContents {
@@ -87,7 +87,7 @@ index 09dda617c1..6e52a4fda6 100644
              context
                  .image_resolver
                  .get_cached_image_for_url(
-@@ -808,11 +814,171 @@ fn try_to_parse_image_data_url(string: &str) -> Option<Url> {
+@@ -808,11 +814,180 @@ fn try_to_parse_image_data_url(string: &str) -> Option<Url> {
      Url::parse(string).ok()
  }
  
@@ -197,6 +197,15 @@ index 09dda617c1..6e52a4fda6 100644
 +        "visibility",
 +        style.get_inherited_box().visibility.to_css_string(),
 +    );
++    // Text styling: without these the rasterizer falls back to its default
++    // font family, and if that family is absent from the system the whole
++    // text span is dropped rather than substituted. Computed `font-size` is
++    // already absolute, so em/rem-based sizes arrive resolved.
++    let font = style.get_font();
++    push("font-family", font.font_family.to_css_string());
++    push("font-size", font.font_size.to_css_string());
++    push("font-weight", font.font_weight.to_css_string());
++    push("font-style", font.font_style.to_css_string());
 +    // The root `<svg>` generates a real box, so Servo applies its `opacity`
 +    // and `transform` natively during painting — flattening them into the
 +    // rasterization as well would apply them twice. Boxless descendants get
@@ -263,7 +272,7 @@ index 09dda617c1..6e52a4fda6 100644
      use base64::Engine as _;
  
      let base64_payload = source
-@@ -835,6 +1001,7 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
+@@ -835,6 +1010,7 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
      }
      let tag_end = tag_start + xml[tag_start..].find('>')?;
      let open_tag = &xml[tag_start..tag_end];
@@ -271,7 +280,7 @@ index 09dda617c1..6e52a4fda6 100644
  
      // A `color` attribute already present on the root wins. The whitespace
      // check keeps `stop-color=` and friends from matching.
-@@ -844,17 +1011,31 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
+@@ -844,17 +1020,31 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
              .next_back()
              .is_some_and(|preceding| preceding.is_ascii_whitespace())
      });

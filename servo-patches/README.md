@@ -119,14 +119,26 @@ servo = { path = "../servo/components/servo" }
   `rgba(...)` reference exactly, descendant `opacity`, CSS
   `transform: translate(...)` on a descendant, and em-based
   `stroke-width` — all correct; the 0003 probe still passes 4/4.
-  Known limitations: CSS `display: none` on descendants is not honored
-  (Servo computes `display: none` for the whole boxless subtree, so the
-  computed value carries no author signal; `visibility: hidden` works),
-  `transform-origin` is not carried over, `<use>`-expanded clones flatten
-  with the referenced element's at-definition styles, and SVG `<text>`
-  did not render in the Linux container with or without this series —
-  an upstream rasterized-text/font-resolution issue, not a flattening
-  one (the same document renders offline via resvg with system fonts).
-  With this patch the app-side presentation-attribute fallbacks
-  recreated for Copse's titlebar icons become unnecessary (they remain
-  harmless).
+  Font properties (`font-family`/`-size`/`-weight`/`-style`) are also
+  flattened so `<text>` reaches the rasterizer with the author's font,
+  with computed `font-size` already absolute (see 0007 for the
+  complementary resolver fix). Known limitations: CSS `display: none` on
+  descendants is not honored (Servo computes `display: none` for the
+  whole boxless subtree, so the computed value carries no author signal;
+  `visibility: hidden` works), `transform-origin` is not carried over,
+  and `<use>`-expanded clones flatten with the referenced element's
+  at-definition styles. With this patch the app-side
+  presentation-attribute fallbacks recreated for Copse's titlebar icons
+  become unnecessary (they remain harmless).
+
+- **0007 — script: fall back to generic sans-serif for SVG text font
+  resolution.** The rasterizer substitutes fonts per-glyph only after a
+  base font resolves for a text span; when `SvgFontResolver` returns
+  `None` the whole span is dropped. Markup with no font-family reaches
+  the resolver as usvg's default family ("Times New Roman"), so on
+  systems without it every such `<text>` silently vanished — verified by
+  tracing the resolver in the Linux container (`families=[Named("Times
+  New Roman")], templates=0`). Retries with the embedder's generic
+  sans-serif before giving up. *Validated on Linux* together with 0006's
+  font flattening: the extended probe's class-styled `<text>` case (bold
+  30px magenta "A") went from rendering nothing to correct.
