@@ -688,6 +688,11 @@ impl Embedder {
     if let Some(background_color) = background_color {
       preferences.shell_background_color_rgba = background_color;
     }
+    // The legacy editing API (`document.queryCommandSupported` and friends)
+    // is implemented but pref-gated off by default; widely-deployed libraries
+    // probe it at load time (e.g. monaco-editor's clipboard contrib) and an
+    // entire bundle dies on the missing function when the pref is off.
+    preferences.dom_exec_command_enabled = true;
 
     let mut protocol_registry = ProtocolRegistry::default();
     for (scheme, handler) in custom_protocols {
