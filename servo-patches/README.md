@@ -60,36 +60,8 @@ servo = { path = "../servo/components/servo" }
   per-resolved-color. *Validated on Linux* with a four-variant probe
   (currentColor + CSS color now correct; explicit `color` attributes and
   explicit paints unchanged) and against Copse's titlebar icon set.
-  Note this fixes only the inherited-`color` input; paints set via CSS
-  *classes* on SVG descendants (`fill`/`stroke`/`stroke-width` in a
-  stylesheet) are still lost by serialization. The general fix is a
-  candidate 0005, now investigated and feasible — all open questions
-  resolved in its favor:
-  - Stylo *does* style SVG descendants (their presentational hints are
-    synthesized from the cascade via `element.rs`'s call into
-    `LayoutDom<SVGElement>::synthesize_presentational_hints`, and Servo's
-    style system has real `fill`/`stroke`/`stroke-width`/`d` longhands),
-    so computed values exist for every element in the subtree.
-  - The rasterizer honors CSS: usvg 0.47 parses `<style>` elements with
-    simplecss, including attribute selectors and `!important`
-    (`usvg/src/parser/svgtree/parse.rs`).
-  - Design: at serialization (`SVGSVGElement::serialize_and_cache_subtree`)
-    stamp each cloned element with a structural `data-servo-style-id`
-    (style-independent, so the cached serialization survives restyles);
-    at layout (0003's `replaced.rs` site) walk the subtree's computed
-    styles each pass, generate a `<style>` block of
-    `[data-servo-style-id="n"] { fill: …!important; … }` rules, and
-    inject it into the decoded XML exactly like 0003 injects `color` —
-    the rewritten URL is the cache key, so restyles (e.g. theme flips)
-    re-rasterize for free with no new invalidation plumbing and no
-    image-cache protocol changes. (usvg's `Options::style_sheet`
-    injection point was considered and rejected: it would require keying
-    the image cache on the stylesheet anyway.)
-  - Known limitation: `<use>`-expanded clones keep the referenced
-    element's id, so they flatten with the referenced element's
-    at-definition styles.
-  Estimated at roughly 200 lines across script and layout, reusing 0003's
-  helpers.
+  Note this fixes only the inherited-`color` input; 0006 generalizes it
+  to all selector-driven styling on the subtree.
 
 - **0004 — script: report module evaluation errors asynchronously.**
   Cherry-picked from the fork branch `jkt/module-worker-top-level-await`
@@ -103,3 +75,41 @@ servo = { path = "../servo/components/servo" }
   rejection surfacing on `Worker.onerror`). *Build-validated on Linux* as
   part of the four-patch stack; the WPT suite has not yet been run against
   it.
+
+- **0005 — script: honor the SVG `color` presentation attribute.**
+  SVG 2 defines presentation attributes for CSS properties including
+  `color`, but `SVGElement`'s presentational-hint synthesis only covered
+  paint and geometry properties, so `<svg color="#ff4040">` never
+  influenced the computed color — breaking `currentColor` resolution for
+  such markup, including in the rasterization path 0003/0006 feed.
+  *Validated on Linux*: with 0006 applied, the 0003 probe's
+  color-attribute cases regressed to the inherited color until this
+  patch restored them.
+
+- **0006 — layout: flatten computed styles into rasterized inline SVG.**
+  The general form of 0003: selector-driven styling on the SVG subtree
+  (class rules for `fill`/`stroke`/`stroke-width`/…) was lost by
+  serialization, so stylesheet-styled icon sets rendered with initial
+  paints. Serialization stamps each cloned element with a structural
+  `data-servo-style-id` (style-independent, so the cached serialization
+  survives restyles); layout walks the subtree's computed styles in the
+  same preorder each pass and injects a `<style>` block of
+  `[data-servo-style-id="n"] { … !important }` rules into the decoded
+  document (usvg parses `<style>` via simplecss, including attribute
+  selectors and `!important`). `currentcolor` is resolved at flatten time
+  (svgtypes only parses the camelCase spelling), and the rewritten URL
+  remains the cache key. Because SVG descendants generate no boxes, a
+  subtree restyle previously surfaced only as repaint damage and left a
+  stale rasterization; the damage traversal now escalates any damage at
+  an `<svg>` to a box rebuild — which is also what makes theme flips
+  re-rasterize. *Validated end-to-end on Linux* with a five-case probe
+  (class `stroke: currentColor`, per-class fills, themed fill flipped
+  live dark/light, `visibility: hidden` descendant, explicit-attribute
+  control) — all correct in both themes, and the 0003 probe still passes
+  4/4. Known limitations: CSS `display: none` on descendants is not
+  honored (Servo computes `display: none` for the whole boxless subtree,
+  so the computed value carries no author signal; `visibility: hidden`
+  works), and `<use>`-expanded clones flatten with the referenced
+  element's at-definition styles. With this patch the app-side
+  presentation-attribute fallbacks recreated for Copse's titlebar icons
+  become unnecessary (they remain harmless).

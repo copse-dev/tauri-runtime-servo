@@ -1,0 +1,311 @@
+From b6c0eaeab1617920c42727a605ae786bfbb0385f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 21 Aug 2026 17:04:36 +0000
+Subject: [PATCH] layout: flatten computed styles into rasterized inline SVG
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Inline <svg> is XML-serialized and rasterized by resvg with no CSS
+context, so selector-driven styling on the subtree — class rules for
+fill, stroke, stroke-width and friends — was lost entirely: icon sets
+styled via stylesheet classes rendered with initial paints.
+
+Serialization (SVGSVGElement::serialize_and_cache_subtree) now stamps
+each element in the cloned subtree with a data-servo-style-id attribute
+recording its preorder position; the ids depend only on structure, so
+the cached serialization stays valid across restyles. At layout time,
+the replaced-content path walks the original subtree's computed styles
+in the same preorder and injects a <style> block of
+[data-servo-style-id="n"] rules (usvg parses <style> via simplecss,
+including attribute selectors and !important) carrying each element's
+computed SVG paint properties. Declarations are !important so they
+outrank presentation attributes and inline style in the serialized
+markup — computed values already reflect the full cascade. currentcolor
+is resolved at flatten time against each element's computed color, since
+svgtypes only parses the camelCase currentColor spelling. As with the
+root color attribute, the rewritten data: URL doubles as the cache key,
+so identical style states rasterize once and restyles re-rasterize.
+
+Because SVG descendants generate no boxes, a restyle inside the subtree
+(for example a theme class flip recoloring icons) previously surfaced
+only as repaint-level damage and left a stale rasterization on screen;
+the damage traversal now escalates any damage arriving at an <svg>
+element to a box rebuild so rasterization inputs are recomputed.
+
+Known limitations: display:none from CSS on descendants is not honored
+(Servo computes display:none for the whole boxless subtree, so the
+computed value carries no author signal; visibility:hidden works), and
+subtrees cloned by <use> expansion keep the referenced element's id, so
+they flatten with the referenced element's at-definition styles.
+---
+ components/layout/replaced.rs              | 152 +++++++++++++++++++--
+ components/layout/traversal.rs             |  16 +++
+ components/script/dom/svg/svgsvgelement.rs |  22 +++
+ 3 files changed, 175 insertions(+), 15 deletions(-)
+
+diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
+index 09dda617c1..c0f588c9f2 100644
+--- a/components/layout/replaced.rs
++++ b/components/layout/replaced.rs
+@@ -301,16 +301,22 @@ impl ReplacedContents {
+         let cached_image = svg_source.and_then(|svg_source| {
+             // The serialized copy is rasterized with no CSS context, so
+             // `currentColor` inside it would resolve to black instead of the
+-            // element's computed `color`. Carry that color into the document
+-            // as a root attribute (which the rasterizer honors); the rewritten
+-            // URL also becomes the cache key, so the same markup rasterizes
+-            // once per resolved color.
++            // element's computed `color`, and selector-driven styling (class
++            // rules for `fill`/`stroke`/…) would be lost entirely. Carry the
++            // computed `color` into the document as a root attribute and the
++            // subtree's computed SVG paint properties as a generated
++            // stylesheet keyed by the `data-servo-style-id` attributes that
++            // serialization stamped; the rewritten URL also becomes the cache
++            // key, so the same markup rasterizes once per resolved style
++            // state and restyles re-rasterize naturally.
+             let color = node
+                 .style(&context.style_context)
+                 .clone_color()
+                 .to_css_string();
++            let flattened_rules = collect_flattened_svg_style_rules(node);
+             let svg_source =
+-                inject_computed_color_into_svg_source(&svg_source, &color).unwrap_or(svg_source);
++                inject_computed_styles_into_svg_source(&svg_source, &color, &flattened_rules)
++                    .unwrap_or(svg_source);
+             context
+                 .image_resolver
+                 .get_cached_image_for_url(
+@@ -808,11 +814,112 @@ fn try_to_parse_image_data_url(string: &str) -> Option<Url> {
+     Url::parse(string).ok()
+ }
+ 
++/// Generates a stylesheet flattening each subtree element's computed SVG
++/// paint properties into rules keyed by the `data-servo-style-id` attributes
++/// that `SVGSVGElement` serialization stamped, walking the DOM subtree in the
++/// same preorder. Declarations are `!important` so they take precedence over
++/// presentation attributes and inline `style` in the serialized markup —
++/// computed values already reflect the full cascade. Elements the style
++/// system skipped (e.g. inside a `display: none` subtree) contribute no rule.
++fn collect_flattened_svg_style_rules(node: ServoLayoutNode<'_>) -> String {
++    fn visit(node: ServoLayoutNode<'_>, index: &mut u32, rules: &mut String) {
++        if node.as_element().is_none() {
++            return;
++        }
++        let id = *index;
++        *index += 1;
++        if let Some(style) = node
++            .as_element()
++            .and_then(|element| element.style_data())
++            .map(|style_data| style_data.element_data.borrow())
++            .and_then(|data| data.styles.get_primary().cloned())
++        {
++            append_flattened_svg_style_rule(id, &style, rules);
++        }
++        for child in node.dom_children() {
++            visit(child, index, rules);
++        }
++    }
++
++    let mut rules = String::new();
++    let mut index = 0;
++    visit(node, &mut index, &mut rules);
++    rules
++}
++
++fn append_flattened_svg_style_rule(id: u32, style: &ComputedValues, rules: &mut String) {
++    use std::fmt::Write as _;
++
++    let mut declarations = String::new();
++    let mut push = |name: &str, value: String| {
++        let _ = write!(declarations, "{name}:{value}!important;");
++    };
++
++    // Resolve `currentcolor` here rather than relying on the rasterizer:
++    // svgtypes parses the keyword case-sensitively as `currentColor`, so
++    // stylo's lowercase computed serialization would fail to parse, and the
++    // computed `color` is on hand anyway.
++    let color = style.clone_color().to_css_string();
++    let resolve_current_color = |paint_css: String| {
++        if paint_css == "currentcolor" {
++            color.clone()
++        } else {
++            paint_css
++        }
++    };
++
++    let svg = style.get_inherited_svg();
++    push("fill", resolve_current_color(svg.fill.to_css_string()));
++    push("fill-opacity", svg.fill_opacity.to_css_string());
++    push("fill-rule", svg.fill_rule.to_css_string());
++    push("stroke", resolve_current_color(svg.stroke.to_css_string()));
++    push("stroke-width", svg.stroke_width.to_css_string());
++    push("stroke-linecap", svg.stroke_linecap.to_css_string());
++    push("stroke-linejoin", svg.stroke_linejoin.to_css_string());
++    push("stroke-miterlimit", svg.stroke_miterlimit.to_css_string());
++    push("stroke-dasharray", svg.stroke_dasharray.to_css_string());
++    push("stroke-dashoffset", svg.stroke_dashoffset.to_css_string());
++    push("stroke-opacity", svg.stroke_opacity.to_css_string());
++    push("color", color.clone());
++    push("opacity", style.get_effects().opacity.to_string());
++    push(
++        "visibility",
++        style.get_inherited_box().visibility.to_css_string(),
++    );
++    // `display` is deliberately not flattened: Servo computes `display: none`
++    // for elements inside a replaced `<svg>` subtree (they generate no boxes),
++    // which says nothing about author intent — emitting it would hide every
++    // shape. CSS-driven `display: none` on SVG descendants therefore still
++    // isn't honored by rasterization; `visibility: hidden` is.
++
++    let _ = write!(rules, "[data-servo-style-id=\"{id}\"]{{{declarations}}}");
++}
++
++/// Escapes text for embedding in XML character data, so CSS values that
++/// happen to contain markup-significant characters can't derail parsing.
++fn escape_xml_text(text: &str) -> String {
++    let mut escaped = String::with_capacity(text.len());
++    for character in text.chars() {
++        match character {
++            '&' => escaped.push_str("&amp;"),
++            '<' => escaped.push_str("&lt;"),
++            '>' => escaped.push_str("&gt;"),
++            _ => escaped.push(character),
++        }
++    }
++    escaped
++}
++
+ /// Rewrites a serialized inline-SVG data URL so its root carries the
+-/// element's computed CSS `color` as a presentation attribute, unless the
+-/// markup already declares one. Returns `None` (leaving the source untouched)
+-/// for anything unexpected.
+-fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) -> Option<ServoUrl> {
++/// element's computed CSS `color` as a presentation attribute (unless the
++/// markup already declares one) and, when `flattened_rules` is non-empty, a
++/// `<style>` child carrying the subtree's flattened computed styles. Returns
++/// `None` (leaving the source untouched) for anything unexpected.
++fn inject_computed_styles_into_svg_source(
++    source: &ServoUrl,
++    color_css: &str,
++    flattened_rules: &str,
++) -> Option<ServoUrl> {
+     use base64::Engine as _;
+ 
+     let base64_payload = source
+@@ -835,6 +942,7 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
+     }
+     let tag_end = tag_start + xml[tag_start..].find('>')?;
+     let open_tag = &xml[tag_start..tag_end];
++    let root_is_self_closing = open_tag.ends_with('/');
+ 
+     // A `color` attribute already present on the root wins. The whitespace
+     // check keeps `stop-color=` and friends from matching.
+@@ -844,17 +952,31 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
+             .next_back()
+             .is_some_and(|preceding| preceding.is_ascii_whitespace())
+     });
+-    if has_color_attribute {
++
++    let inject_color = !has_color_attribute &&
++        // Attribute values are CSS color serializations like `rgb(1, 2, 3)`;
++        // refuse anything that could break out of the quoted attribute.
++        !color_css.contains(['"', '<', '>', '&']);
++
++    // A self-closing root has no children to style (and nowhere to put the
++    // stylesheet); the root `<svg>` container itself paints nothing.
++    let inject_rules = !flattened_rules.is_empty() && !root_is_self_closing;
++
++    if !inject_color && !inject_rules {
+         return None;
+     }
+ 
+-    // Attribute values are CSS color serializations like `rgb(1, 2, 3)`;
+-    // refuse anything that could break out of the quoted attribute.
+-    if color_css.contains(['"', '<', '>', '&']) {
+-        return None;
++    // Insert at the later position first so the earlier one stays valid.
++    if inject_rules {
++        xml.insert_str(
++            tag_end + 1,
++            &format!("<style>{}</style>", escape_xml_text(flattened_rules)),
++        );
++    }
++    if inject_color {
++        xml.insert_str(after_name, &format!(" color=\"{color_css}\""));
+     }
+ 
+-    xml.insert_str(after_name, &format!(" color=\"{color_css}\""));
+     let reencoded = base64::engine::general_purpose::STANDARD.encode(xml);
+     ServoUrl::parse(&format!("data:image/svg+xml;base64,{reencoded}")).ok()
+ }
+diff --git a/components/layout/traversal.rs b/components/layout/traversal.rs
+index d3c328f975..a1674fdcbf 100644
+--- a/components/layout/traversal.rs
++++ b/components/layout/traversal.rs
+@@ -226,6 +226,22 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
+         layout_roots,
+     );
+ 
++    // An `<svg>` element renders as a rasterization of its serialized subtree
++    // resolved against the subtree's computed styles (see
++    // `ReplacedContents::svg_kind_size`). Its descendants have no boxes, so a
++    // restyle inside the subtree — or of the `<svg>`'s own inherited inputs
++    // like `color` — surfaces only as repaint-level damage that would leave a
++    // stale rasterization on screen. Escalate any damage at the `<svg>`
++    // boundary to a box rebuild so the rasterization inputs are recomputed.
++    if !(damage_set.on_element | damage_set.from_children).is_empty() &&
++        node.type_id() ==
++            Some(layout_api::LayoutNodeType::Element(
++                layout_api::LayoutElementType::SVGSVGElement,
++            ))
++    {
++        damage_set.on_element.insert(LayoutDamage::BoxDamage);
++    }
++
+     // Apply the calculated damage to this element (perhaps triggering box tree layout),
+     // and propagate resulting damage to ancestors.
+     damage_set.apply_damage(layout_context, layout_roots)
+diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
+index d3ce15857b..5f38f8351e 100644
+--- a/components/script/dom/svg/svgsvgelement.rs
++++ b/components/script/dom/svg/svgsvgelement.rs
+@@ -94,6 +94,7 @@ impl SVGSVGElement {
+             return;
+         }
+ 
++        self.stamp_style_flattening_ids(cx, &cloned_node);
+         self.process_use_elements(cx, &cloned_node);
+ 
+         let Ok(xml_source) = cloned_node.xml_serialize(TraversalScope::IncludeNode) else {
+@@ -110,6 +111,27 @@ impl SVGSVGElement {
+         };
+     }
+ 
++    /// Stamps every element in the cloned subtree with a
++    /// `data-servo-style-id` attribute recording its preorder position.
++    /// Layout walks the original subtree in the same order and generates a
++    /// stylesheet of computed styles keyed by these ids, so the rasterizer
++    /// (which parses the serialization with no CSS context) can honor
++    /// selector-driven styling. The ids depend only on subtree structure,
++    /// never on styles, so the cached serialization stays valid across
++    /// restyles. This must run before `<use>` expansion to keep the
++    /// preorder aligned with the original subtree; expanded `<use>` content
++    /// is intentionally left unstamped.
++    fn stamp_style_flattening_ids(&self, cx: &mut JSContext, root_node: &Node) {
++        let style_id_name = LocalName::from("data-servo-style-id");
++        let mut index: u32 = 0;
++        for node in root_node.traverse_preorder(ShadowIncluding::No) {
++            if let Some(element) = node.downcast::<Element>() {
++                element.set_attribute(cx, &style_id_name, AttrValue::String(index.to_string()));
++                index += 1;
++            }
++        }
++    }
++
+     fn process_use_elements(&self, cx: &mut JSContext, root_node: &Node) {
+         for node in root_node.traverse_preorder(ShadowIncluding::No) {
+             if let Some(element) = node.downcast::<Element>() &&
+-- 
+2.43.0
+
