@@ -695,6 +695,11 @@ impl Embedder {
     // probe it at load time (e.g. monaco-editor's clipboard contrib) and an
     // entire bundle dies on the missing function when the pref is off.
     preferences.dom_exec_command_enabled = true;
+    // The async Clipboard API (`navigator.clipboard`) is likewise implemented
+    // behind a pref, and servo's default `clipboard` feature ships a system
+    // clipboard delegate on desktop platforms — enabling it lights up copy
+    // buttons with no embedder-side plumbing.
+    preferences.dom_async_clipboard_enabled = true;
 
     let mut protocol_registry = ProtocolRegistry::default();
     for (scheme, handler) in custom_protocols {
