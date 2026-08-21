@@ -60,6 +60,24 @@ servo = { path = "../servo/components/servo" }
   per-resolved-color. *Validated on Linux* with a four-variant probe
   (currentColor + CSS color now correct; explicit `color` attributes and
   explicit paints unchanged) and against Copse's titlebar icon set.
-  A patch for module-worker top-level await exists uncommitted on a local
-  machine (`jkt/module-worker-top-level-await`) and joins this series as
-  0004 once pushed.
+  Note this fixes only the inherited-`color` input; paints set via CSS
+  *classes* on SVG descendants (`fill`/`stroke`/`stroke-width` in a
+  stylesheet) are still lost by serialization. The general fix — flattening
+  each descendant's computed SVG presentation properties into the
+  serialized markup as `style` attributes, with the same rewritten-URL
+  cache key — is a candidate 0005; its open question is whether stylo
+  exposes computed styles for descendants of a replaced `<svg>` box or the
+  patch must force-style that subtree.
+
+- **0004 — script: report module evaluation errors asynchronously.**
+  Cherry-picked from the fork branch `jkt/module-worker-top-level-await`
+  (f7c87376be); applies cleanly to the pinned rev. `execute_module` forced
+  the module evaluation promise to settle synchronously
+  (`ThrowModuleErrorsSync`), which is wrong for modules using top-level
+  await — their evaluation promise is still pending when `ModuleEvaluate`
+  returns. Switches to `ReportModuleErrorsAsync`, matching step 8 of "run
+  a module script". Ships WPT coverage for dedicated module workers using
+  top-level await (static import, dynamic import, pending message,
+  rejection surfacing on `Worker.onerror`). *Build-validated on Linux* as
+  part of the four-patch stack; the WPT suite has not yet been run against
+  it.

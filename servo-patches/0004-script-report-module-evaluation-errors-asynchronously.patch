@@ -1,0 +1,229 @@
+From 5f358698ccf2a5bc951839f425a90863e2d6a780 Mon Sep 17 00:00:00 2001
+From: Jonathan Kingston <KingstonMailBox@gmail.com>
+Date: Fri, 21 Aug 2026 15:50:12 +0100
+Subject: [PATCH] script: Report module evaluation errors asynchronously
+
+`execute_module` passed `ModuleErrorBehaviour::ThrowModuleErrorsSync` to
+`ThrowOnModuleEvaluationFailure`, which forces the evaluation promise to
+settle synchronously. That is incorrect for modules using top-level
+await, whose evaluation promise is still pending when `ModuleEvaluate`
+returns.
+
+Switch to `ReportModuleErrorsAsync` so SpiderMonkey attaches a rejection
+handler to the evaluation promise instead. This matches step 8 of
+"run a module script", which reports an exception *upon rejection of*
+evaluationPromise rather than at evaluation time.
+
+Testing: Adds tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html
+covering top-level await after a static import, of a dynamic import,
+while a message is pending, and a rejected top-level await surfacing on
+Worker.onerror. Not yet run locally; needs a WPT run before review.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+(cherry picked from commit f7c87376be8f6d98ca428879764c96d568f8b82e)
+---
+ components/script/script_module.rs            | 10 ++--
+ tests/wpt/meta/MANIFEST.json                  | 31 +++++++++++
+ .../dedicated-worker-top-level-await.html     | 53 +++++++++++++++++++
+ .../top-level-await-dynamic-import-worker.js  |  2 +
+ .../top-level-await-dynamic-import.js         |  1 +
+ .../top-level-await-message-worker.js         |  4 ++
+ .../top-level-await-rejection-worker.js       |  1 +
+ .../top-level-await-static-import-worker.js   |  4 ++
+ .../top-level-await-static-import.js          |  1 +
+ 9 files changed, 102 insertions(+), 5 deletions(-)
+ create mode 100644 tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html
+ create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js
+ create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js
+ create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js
+ create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js
+ create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js
+ create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js
+
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index fd27aac8f4..e53637a8ff 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -459,17 +459,17 @@ impl ModuleTree {
+                 evaluation_promise.set(eval_result.to_object());
+             }
+ 
+-            let throw_result = ThrowOnModuleEvaluationFailure(
++            let report_result = ThrowOnModuleEvaluationFailure(
+                 cx,
+                 evaluation_promise.handle(),
+-                ModuleErrorBehaviour::ThrowModuleErrorsSync,
++                ModuleErrorBehaviour::ReportModuleErrorsAsync,
+             );
+-            if !throw_result {
+-                warn!("fail to evaluate module");
++            if !report_result {
++                warn!("failed to install module evaluation error reporting");
+ 
+                 Err(RethrowError::from_pending_exception(cx))
+             } else {
+-                debug!("module evaluated successfully");
++                debug!("module evaluation started successfully");
+                 Ok(())
+             }
+         }
+diff --git a/tests/wpt/meta/MANIFEST.json b/tests/wpt/meta/MANIFEST.json
+index f506b1c837..3c92cbea46 100644
+--- a/tests/wpt/meta/MANIFEST.json
++++ b/tests/wpt/meta/MANIFEST.json
+@@ -598717,6 +598717,30 @@
+       "throw.js": [
+        "3d876d43d930d281c1d6aa595e527497b622e80b",
+        []
++      ],
++      "top-level-await-dynamic-import-worker.js": [
++       "539e11513a866bca67b61477d396bbf7a24a749c",
++       []
++      ],
++      "top-level-await-dynamic-import.js": [
++       "18c9b55806aaef71faa8511d212ccb3600d1ff11",
++       []
++      ],
++      "top-level-await-message-worker.js": [
++       "cf66a51636a175b0d35d606b8b4244b5969366ec",
++       []
++      ],
++      "top-level-await-rejection-worker.js": [
++       "4c39c8830a2cee4cc2c01f923c1464ae124aa98b",
++       []
++      ],
++      "top-level-await-static-import-worker.js": [
++       "f1c4e9bb7ff2e67dbdd05fc33ba2e27c20c17a40",
++       []
++      ],
++      "top-level-await-static-import.js": [
++       "7e2f2b676c71e31eb0e368c3e93fecec99a017f1",
++       []
+       ]
+      },
+      "shared-worker-options-credentials.html.headers": [
+@@ -1462648,6 +1462672,13 @@
+        {}
+       ]
+      ],
++     "dedicated-worker-top-level-await.html": [
++      "96d617b7f32cbc84813e055d0d3763516d968de7",
++      [
++       null,
++       {}
++      ]
++     ],
+      "shared-worker-import-blob-url.window.js": [
+       "a79d5725ad879106ec78bd4a66977352db756818",
+       [
+diff --git a/tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html b/tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html
+new file mode 100644
+index 0000000000..96d617b7f3
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html
+@@ -0,0 +1,53 @@
++<!doctype html>
++<meta charset="utf-8">
++<title>Top-level await in dedicated module workers</title>
++<script src="/resources/testharness.js"></script>
++<script src="/resources/testharnessreport.js"></script>
++<script>
++function wait_for_worker_message(t, script, message) {
++  return new Promise((resolve, reject) => {
++    const worker = new Worker(`resources/${script}`, {type: 'module'});
++    t.add_cleanup(() => worker.terminate());
++    worker.onmessage = t.step_func(event => resolve(event.data));
++    worker.onerror = t.step_func(event => {
++      event.preventDefault();
++      reject(new Error(event.message));
++    });
++    if (message !== undefined) {
++      worker.postMessage(message);
++    }
++  });
++}
++
++promise_test(async t => {
++  const result = await wait_for_worker_message(
++      t, 'top-level-await-static-import-worker.js');
++  assert_equals(result, 'static import');
++}, 'Top-level await following a static import');
++
++promise_test(async t => {
++  const result = await wait_for_worker_message(
++      t, 'top-level-await-dynamic-import-worker.js');
++  assert_equals(result, 'dynamic import');
++}, 'Top-level await of a dynamic import');
++
++promise_test(async t => {
++  const result = await wait_for_worker_message(
++      t, 'top-level-await-message-worker.js', 'message');
++  assert_equals(result, 'message');
++}, 'A module worker can receive a message while top-level await is pending');
++
++promise_test(async t => {
++  const event = await new Promise(resolve => {
++    const worker = new Worker(
++        'resources/top-level-await-rejection-worker.js', {type: 'module'});
++    t.add_cleanup(() => worker.terminate());
++    worker.onmessage = t.unreached_func('The worker must not post a message');
++    worker.onerror = t.step_func(error => {
++      error.preventDefault();
++      resolve(error);
++    });
++  });
++  assert_regexp_match(event.message, /top-level await rejection/);
++}, 'A rejected top-level await reports an error on the Worker');
++</script>
+diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js
+new file mode 100644
+index 0000000000..539e11513a
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js
+@@ -0,0 +1,2 @@
++const {value} = await import('./top-level-await-dynamic-import.js');
++postMessage(value);
+diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js
+new file mode 100644
+index 0000000000..18c9b55806
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js
+@@ -0,0 +1 @@
++export const value = 'dynamic import';
+diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js
+new file mode 100644
+index 0000000000..cf66a51636
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js
+@@ -0,0 +1,4 @@
++const event = await new Promise(resolve => {
++  addEventListener('message', resolve, {once: true});
++});
++postMessage(event.data);
+diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js
+new file mode 100644
+index 0000000000..4c39c8830a
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js
+@@ -0,0 +1 @@
++await Promise.reject(new Error('top-level await rejection'));
+diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js
+new file mode 100644
+index 0000000000..f1c4e9bb7f
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js
+@@ -0,0 +1,4 @@
++import {value} from './top-level-await-static-import.js';
++
++await Promise.resolve();
++postMessage(value);
+diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js
+new file mode 100644
+index 0000000000..7e2f2b676c
+--- /dev/null
++++ b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js
+@@ -0,0 +1 @@
++export const value = 'static import';
+-- 
+2.43.0
+
