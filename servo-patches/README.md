@@ -33,3 +33,7 @@ servo = { path = "../servo/components/servo" }
   from the merged `ProtocolRegistry` into `servo_url` at startup and consults
   them in `ServoUrl::is_potentially_trustworthy`. The related CSP gap
   (`'self'` never matches an opaque origin) is *not* addressed here.
+  *Validated end-to-end on Linux*: with this patch and the randomUUID
+  polyfill disabled, the Copse renderer's id-minting boot path (previously
+  dead without the polyfill) works on the native API under
+  `tauri://localhost`.
