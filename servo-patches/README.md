@@ -62,12 +62,34 @@ servo = { path = "../servo/components/servo" }
   explicit paints unchanged) and against Copse's titlebar icon set.
   Note this fixes only the inherited-`color` input; paints set via CSS
   *classes* on SVG descendants (`fill`/`stroke`/`stroke-width` in a
-  stylesheet) are still lost by serialization. The general fix — flattening
-  each descendant's computed SVG presentation properties into the
-  serialized markup as `style` attributes, with the same rewritten-URL
-  cache key — is a candidate 0005; its open question is whether stylo
-  exposes computed styles for descendants of a replaced `<svg>` box or the
-  patch must force-style that subtree.
+  stylesheet) are still lost by serialization. The general fix is a
+  candidate 0005, now investigated and feasible — all open questions
+  resolved in its favor:
+  - Stylo *does* style SVG descendants (their presentational hints are
+    synthesized from the cascade via `element.rs`'s call into
+    `LayoutDom<SVGElement>::synthesize_presentational_hints`, and Servo's
+    style system has real `fill`/`stroke`/`stroke-width`/`d` longhands),
+    so computed values exist for every element in the subtree.
+  - The rasterizer honors CSS: usvg 0.47 parses `<style>` elements with
+    simplecss, including attribute selectors and `!important`
+    (`usvg/src/parser/svgtree/parse.rs`).
+  - Design: at serialization (`SVGSVGElement::serialize_and_cache_subtree`)
+    stamp each cloned element with a structural `data-servo-style-id`
+    (style-independent, so the cached serialization survives restyles);
+    at layout (0003's `replaced.rs` site) walk the subtree's computed
+    styles each pass, generate a `<style>` block of
+    `[data-servo-style-id="n"] { fill: …!important; … }` rules, and
+    inject it into the decoded XML exactly like 0003 injects `color` —
+    the rewritten URL is the cache key, so restyles (e.g. theme flips)
+    re-rasterize for free with no new invalidation plumbing and no
+    image-cache protocol changes. (usvg's `Options::style_sheet`
+    injection point was considered and rejected: it would require keying
+    the image cache on the stylesheet anyway.)
+  - Known limitation: `<use>`-expanded clones keep the referenced
+    element's id, so they flatten with the referenced element's
+    at-definition styles.
+  Estimated at roughly 200 lines across script and layout, reusing 0003's
+  helpers.
 
 - **0004 — script: report module evaluation errors asynchronously.**
   Cherry-picked from the fork branch `jkt/module-worker-top-level-await`
