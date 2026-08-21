@@ -700,6 +700,10 @@ impl Embedder {
     // clipboard delegate on desktop platforms — enabling it lights up copy
     // buttons with no embedder-side plumbing.
     preferences.dom_async_clipboard_enabled = true;
+    // Two more implemented-but-gated APIs commonly probed by app frameworks
+    // and editor libraries; both are standard and inert unless used.
+    preferences.dom_intersection_observer_enabled = true;
+    preferences.dom_composition_event_enabled = true;
 
     let mut protocol_registry = ProtocolRegistry::default();
     for (scheme, handler) in custom_protocols {

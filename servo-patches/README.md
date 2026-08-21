@@ -22,6 +22,19 @@ out locally, applying the series, and adding to their workspace root:
 servo = { path = "../servo/components/servo" }
 ```
 
+## Known engine issues (no patch yet)
+
+- **Variable-font metrics: spurious word gaps and a dead weight axis.**
+  A variable TTF (`font-weight: 100 900` via `@font-face`) renders with
+  extra advance after certain kerning pairs — "Servo" becomes "Ser vo"
+  (the `r`→`v` pair; "Working" is unaffected) — and `font-weight: 700`
+  renders identical to regular, so the weight axis is ignored. Static
+  TTFs from the same page render perfectly, isolating the bug to Servo's
+  variable-font handling (likely variation deltas misapplied to
+  kerning/advances at the default instance). Reproduced with a
+  four-family probe under the prototype; worth an upstream servo issue
+  with that reduction.
+
 ## Current series
 
 - **0001 — Honor embedder-registered secure schemes in secure-context checks.**
