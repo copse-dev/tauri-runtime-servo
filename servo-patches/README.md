@@ -96,20 +96,37 @@ servo = { path = "../servo/components/servo" }
   same preorder each pass and injects a `<style>` block of
   `[data-servo-style-id="n"] { … !important }` rules into the decoded
   document (usvg parses `<style>` via simplecss, including attribute
-  selectors and `!important`). `currentcolor` is resolved at flatten time
-  (svgtypes only parses the camelCase spelling), and the rewritten URL
-  remains the cache key. Because SVG descendants generate no boxes, a
-  subtree restyle previously surfaced only as repaint damage and left a
-  stale rasterization; the damage traversal now escalates any damage at
-  an `<svg>` to a box rebuild — which is also what makes theme flips
-  re-rasterize. *Validated end-to-end on Linux* with a five-case probe
-  (class `stroke: currentColor`, per-class fills, themed fill flipped
+  selectors and `!important`), and the rewritten URL remains the cache
+  key. Computed-value serializations are adapted where svgtypes disagrees
+  with CSS: `currentcolor` is resolved at flatten time (svgtypes only
+  parses the camelCase spelling); absolutized `url()` paint-server
+  references are reduced back to their local fragment (without this,
+  gradients broke even via *attributes*, since the flattened computed
+  `fill` stomped them with the absolutized form); `transform` is emitted
+  for descendants as the unitless `matrix()` form (functional forms with
+  units are rejected). The root `<svg>` has a real box whose `opacity`
+  and `transform` Servo applies natively, so those are not flattened for
+  the root — flattening them too double-applied root opacity. Because SVG
+  descendants generate no boxes, a subtree restyle previously surfaced
+  only as repaint damage and left a stale rasterization; the damage
+  traversal now escalates any damage at an `<svg>` to a box rebuild —
+  which is also what makes theme flips re-rasterize.
+  *Validated end-to-end on Linux* across two probes and a control:
+  class `stroke: currentColor`, per-class fills, themed fill flipped
   live dark/light, `visibility: hidden` descendant, explicit-attribute
-  control) — all correct in both themes, and the 0003 probe still passes
-  4/4. Known limitations: CSS `display: none` on descendants is not
-  honored (Servo computes `display: none` for the whole boxless subtree,
-  so the computed value carries no author signal; `visibility: hidden`
-  works), and `<use>`-expanded clones flatten with the referenced
-  element's at-definition styles. With this patch the app-side
-  presentation-attribute fallbacks recreated for Copse's titlebar icons
-  become unnecessary (they remain harmless).
+  control, class `stroke-dasharray`, gradients via attribute and via
+  class `fill: url(#id)`, root `opacity: 0.5` matching an HTML
+  `rgba(...)` reference exactly, descendant `opacity`, CSS
+  `transform: translate(...)` on a descendant, and em-based
+  `stroke-width` — all correct; the 0003 probe still passes 4/4.
+  Known limitations: CSS `display: none` on descendants is not honored
+  (Servo computes `display: none` for the whole boxless subtree, so the
+  computed value carries no author signal; `visibility: hidden` works),
+  `transform-origin` is not carried over, `<use>`-expanded clones flatten
+  with the referenced element's at-definition styles, and SVG `<text>`
+  did not render in the Linux container with or without this series —
+  an upstream rasterized-text/font-resolution issue, not a flattening
+  one (the same document renders offline via resvg with system fonts).
+  With this patch the app-side presentation-attribute fallbacks
+  recreated for Copse's titlebar icons become unnecessary (they remain
+  harmless).

@@ -1,4 +1,4 @@
-From b6c0eaeab1617920c42727a605ae786bfbb0385f Mon Sep 17 00:00:00 2001
+From 20cfa8bc8c7147f1399af36ce10e2d5ddeb6a69f Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 17:04:36 +0000
 Subject: [PATCH] layout: flatten computed styles into rasterized inline SVG
@@ -21,11 +21,21 @@ in the same preorder and injects a <style> block of
 including attribute selectors and !important) carrying each element's
 computed SVG paint properties. Declarations are !important so they
 outrank presentation attributes and inline style in the serialized
-markup — computed values already reflect the full cascade. currentcolor
-is resolved at flatten time against each element's computed color, since
-svgtypes only parses the camelCase currentColor spelling. As with the
+markup — computed values already reflect the full cascade. As with the
 root color attribute, the rewritten data: URL doubles as the cache key,
 so identical style states rasterize once and restyles re-rasterize.
+
+Computed-value serializations are adapted where the rasterizer's SVG
+value parser disagrees with CSS:
+- currentcolor is resolved at flatten time against the element's
+  computed color (svgtypes only parses the camelCase spelling);
+- absolutized url() paint-server references are reduced back to their
+  local fragment (url(#id) is all the rasterizer resolves);
+- transform is emitted for descendants as the unitless matrix() form
+  (svgtypes rejects CSS functional forms with units); transforms
+  needing a reference box or a third dimension are skipped.
+The root <svg> generates a real box whose opacity and transform Servo
+already applies natively, so those two are not flattened for the root.
 
 Because SVG descendants generate no boxes, a restyle inside the subtree
 (for example a theme class flip recoloring icons) previously surfaced
@@ -35,17 +45,18 @@ element to a box rebuild so rasterization inputs are recomputed.
 
 Known limitations: display:none from CSS on descendants is not honored
 (Servo computes display:none for the whole boxless subtree, so the
-computed value carries no author signal; visibility:hidden works), and
-subtrees cloned by <use> expansion keep the referenced element's id, so
-they flatten with the referenced element's at-definition styles.
+computed value carries no author signal; visibility:hidden works),
+transform-origin is not carried over, and subtrees cloned by <use>
+expansion keep the referenced element's id, so they flatten with the
+referenced element's at-definition styles.
 ---
- components/layout/replaced.rs              | 152 +++++++++++++++++++--
- components/layout/traversal.rs             |  16 +++
+ components/layout/replaced.rs              | 211 +++++++++++++++++++--
+ components/layout/traversal.rs             |  16 ++
  components/script/dom/svg/svgsvgelement.rs |  22 +++
- 3 files changed, 175 insertions(+), 15 deletions(-)
+ 3 files changed, 234 insertions(+), 15 deletions(-)
 
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 09dda617c1..c0f588c9f2 100644
+index 09dda617c1..6e52a4fda6 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -301,16 +301,22 @@ impl ReplacedContents {
@@ -76,7 +87,7 @@ index 09dda617c1..c0f588c9f2 100644
              context
                  .image_resolver
                  .get_cached_image_for_url(
-@@ -808,11 +814,112 @@ fn try_to_parse_image_data_url(string: &str) -> Option<Url> {
+@@ -808,11 +814,171 @@ fn try_to_parse_image_data_url(string: &str) -> Option<Url> {
      Url::parse(string).ok()
  }
  
@@ -100,7 +111,7 @@ index 09dda617c1..c0f588c9f2 100644
 +            .map(|style_data| style_data.element_data.borrow())
 +            .and_then(|data| data.styles.get_primary().cloned())
 +        {
-+            append_flattened_svg_style_rule(id, &style, rules);
++            append_flattened_svg_style_rule(id, &style, id == 0, rules);
 +        }
 +        for child in node.dom_children() {
 +            visit(child, index, rules);
@@ -113,7 +124,12 @@ index 09dda617c1..c0f588c9f2 100644
 +    rules
 +}
 +
-+fn append_flattened_svg_style_rule(id: u32, style: &ComputedValues, rules: &mut String) {
++fn append_flattened_svg_style_rule(
++    id: u32,
++    style: &ComputedValues,
++    is_root: bool,
++    rules: &mut String,
++) {
 +    use std::fmt::Write as _;
 +
 +    let mut declarations = String::new();
@@ -134,11 +150,41 @@ index 09dda617c1..c0f588c9f2 100644
 +        }
 +    };
 +
++    // Computed url() values are absolutized against the document base, but
++    // the rasterizer resolves paint-server references only as local
++    // fragments (`url(#id)`) within the serialized document — reduce them
++    // back to their fragment.
++    let relativize_paint_server = |paint_css: String| {
++        let Some(start) = paint_css.find("url(") else {
++            return paint_css;
++        };
++        let Some(relative_end) = paint_css[start..].find(')') else {
++            return paint_css;
++        };
++        let end = start + relative_end;
++        let inner = paint_css[start + 4..end].trim_matches(['"', '\'']);
++        let Some(hash) = inner.rfind('#') else {
++            return paint_css;
++        };
++        let fragment = &inner[hash..];
++        if fragment.len() <= 1 {
++            return paint_css;
++        }
++        format!(
++            "{}url({}){}",
++            &paint_css[..start],
++            fragment,
++            &paint_css[end + 1..]
++        )
++    };
++    let flatten_paint =
++        |paint_css: String| relativize_paint_server(resolve_current_color(paint_css));
++
 +    let svg = style.get_inherited_svg();
-+    push("fill", resolve_current_color(svg.fill.to_css_string()));
++    push("fill", flatten_paint(svg.fill.to_css_string()));
 +    push("fill-opacity", svg.fill_opacity.to_css_string());
 +    push("fill-rule", svg.fill_rule.to_css_string());
-+    push("stroke", resolve_current_color(svg.stroke.to_css_string()));
++    push("stroke", flatten_paint(svg.stroke.to_css_string()));
 +    push("stroke-width", svg.stroke_width.to_css_string());
 +    push("stroke-linecap", svg.stroke_linecap.to_css_string());
 +    push("stroke-linejoin", svg.stroke_linejoin.to_css_string());
@@ -147,11 +193,35 @@ index 09dda617c1..c0f588c9f2 100644
 +    push("stroke-dashoffset", svg.stroke_dashoffset.to_css_string());
 +    push("stroke-opacity", svg.stroke_opacity.to_css_string());
 +    push("color", color.clone());
-+    push("opacity", style.get_effects().opacity.to_string());
 +    push(
 +        "visibility",
 +        style.get_inherited_box().visibility.to_css_string(),
 +    );
++    // The root `<svg>` generates a real box, so Servo applies its `opacity`
++    // and `transform` natively during painting — flattening them into the
++    // rasterization as well would apply them twice. Boxless descendants get
++    // both here, with `transform` converted to the unitless `matrix()` form
++    // (svgtypes rejects CSS functional forms with units, and non-matrix 2D
++    // transforms all reduce to one); transforms needing a reference box
++    // (percentages) or a third dimension are skipped. `transform-origin` is
++    // not carried over — SVG's attribute semantics (origin at 0 0) apply.
++    if !is_root {
++        push("opacity", style.get_effects().opacity.to_string());
++
++        let transform = &style.get_box().transform;
++        if !transform.0.is_empty() &&
++            let Ok((matrix, is_3d)) = transform.to_transform_3d_matrix(None) &&
++            !is_3d
++        {
++            push(
++                "transform",
++                format!(
++                    "matrix({}, {}, {}, {}, {}, {})",
++                    matrix.m11, matrix.m12, matrix.m21, matrix.m22, matrix.m41, matrix.m42
++                ),
++            );
++        }
++    }
 +    // `display` is deliberately not flattened: Servo computes `display: none`
 +    // for elements inside a replaced `<svg>` subtree (they generate no boxes),
 +    // which says nothing about author intent — emitting it would hide every
@@ -193,7 +263,7 @@ index 09dda617c1..c0f588c9f2 100644
      use base64::Engine as _;
  
      let base64_payload = source
-@@ -835,6 +942,7 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
+@@ -835,6 +1001,7 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
      }
      let tag_end = tag_start + xml[tag_start..].find('>')?;
      let open_tag = &xml[tag_start..tag_end];
@@ -201,7 +271,7 @@ index 09dda617c1..c0f588c9f2 100644
  
      // A `color` attribute already present on the root wins. The whitespace
      // check keeps `stop-color=` and friends from matching.
-@@ -844,17 +952,31 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
+@@ -844,17 +1011,31 @@ fn inject_computed_color_into_svg_source(source: &ServoUrl, color_css: &str) ->
              .next_back()
              .is_some_and(|preceding| preceding.is_ascii_whitespace())
      });
