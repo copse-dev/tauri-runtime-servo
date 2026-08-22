@@ -53,7 +53,8 @@ servo = { path = "../servo/components/servo" }
   custom-protocol pages like `tauri://localhost`. Registers secure schemes
   from the merged `ProtocolRegistry` into `servo_url` at startup and consults
   them in `ServoUrl::is_potentially_trustworthy`. The related CSP gap
-  (`'self'` never matches an opaque origin) is *not* addressed here.
+  (`'self'` never matches an opaque origin) is addressed by 0008 +
+  csp-0001.
   *Validated end-to-end on Linux*: with this patch and the randomUUID
   polyfill disabled, the Copse renderer's id-minting boot path (previously
   dead without the polyfill) works on the native API under
@@ -178,3 +179,37 @@ servo = { path = "../servo/components/servo" }
   sans-serif before giving up. *Validated on Linux* together with 0006's
   font flattening: the extended probe's class-styled `<text>` case (bold
   30px magenta "A") went from rendering nothing to correct.
+
+- **0008 — url: give embedder-registered custom schemes tuple origins.**
+  The URL standard gives every non-special-scheme URL an opaque origin,
+  so a document served over a registered custom protocol
+  (`tauri://localhost`) got a unique origin per load: CSP `'self'` could
+  never match it (any policy blocked every same-origin subresource — the
+  reason the prototype shipped tauri.html with its CSP meta stripped),
+  `location.origin` was `"null"`, and localStorage was unusable. Models
+  URLs on embedder-registered secure schemes (0001's registry) with a
+  stable `(scheme, host, port)` tuple origin when the URL carries a host
+  — the treatment Chromium/WebKit give schemes registered as "standard"
+  — serialized without a port (`tauri://localhost`), and routes
+  `location.origin`/`URL.origin` through it. CSP `'self'` additionally
+  needs csp-0001 below, because the CSP crate compares against rust-url's
+  notion of the resource URL's origin, which stays opaque. *Validated
+  end-to-end on Linux* with both applied: a seven-case probe under
+  `default-src 'self'` passes 7/7 (same-origin script/style/fetch load;
+  inline and cross-origin scripts blocked with violation events;
+  `location.origin` = `tauri://localhost`; localStorage round-trips), and
+  the full Copse app boots with its real CSP enforced — including
+  `connect-src` matching the loopback WebSocket — with zero violations.
+
+- **csp-0001 — match `'self'` for custom-scheme origins
+  (rust-content-security-policy repo, out of series).** The `'self'`
+  fast path compares the protected resource's origin against
+  `url.origin()`, which rust-url reports as opaque for every non-special
+  scheme — so `'self'` could never match, and the fallback branch only
+  admits http(s)/ws(s) upgrades. Adds component comparison (equal
+  scheme/host, ports equal or absent on both sides) when the user agent
+  supplies a tuple origin, which 0008 makes Servo do. Applies to
+  `rust-ammonia/rust-content-security-policy` at the published 0.8.1 rev
+  (`6a523bab`), consumed via a `[patch.crates-io]` section. Special
+  schemes are unaffected (same-scheme matches were already taken by the
+  fast path).

@@ -1,0 +1,56 @@
+From 91042e44604cbee4fa14a2e7cc51ff39d94fa036 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 22 Aug 2026 00:30:55 +0000
+Subject: [PATCH] Match 'self' against non-special-scheme URLs via tuple-origin
+ components
+
+The 'self' fast path compares the protected resource's origin against
+url.origin(), but the URL standard gives every non-special-scheme URL an
+opaque origin - so for a document served over a custom scheme (e.g. an
+embedder-registered tauri://), 'self' could never match even an exactly
+same-origin subresource, and the fallback branch only admits http(s)/ws(s)
+scheme upgrades. A user agent that models such documents with tuple
+origins now gets component comparison: equal scheme, equal host, and
+equal ports - where 'no port on either side' (tuple sentinel port 0, no
+default port for the scheme) also counts as equal.
+
+Special schemes are unaffected: a same-scheme match there was already
+taken by the origin-equality fast path.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018Jf9dnzfAnoLzptgcNbxDy
+---
+ src/lib.rs | 16 ++++++++++++++--
+ 1 file changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/lib.rs b/src/lib.rs
+index 188aadf..49e725c 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2240,9 +2240,21 @@ fn does_url_match_expression_in_origin_with_redirect_count(
+                 url.port() == default_port(scheme) && default_port(scheme).is_some();
+             let ports_are_default =
+                 url_port_is_default_port_for_scheme && origins_port_is_default_for_scheme;
++            // Non-special schemes never take the origin-equality fast path
++            // above: the URL standard gives their URLs opaque origins, so
++            // `url.origin()` of even a same-origin URL compares unequal to
++            // anything. A user agent that models documents on such schemes
++            // with tuple origins (e.g. an embedder-registered custom scheme
++            // like tauri://) passes one in here; honor it by comparing the
++            // components directly. Such URLs carry no default port, which a
++            // tuple origin can only represent as port 0.
++            let schemes_are_the_same = scheme == url_scheme;
++            let ports_are_omitted =
++                *port == 0 && url.port().is_none() && default_port(scheme).is_none();
+             if hosts_are_the_same
+-                && (ports_are_the_same || ports_are_default)
+-                && ((url_scheme == "https" || url_scheme == "wss")
++                && (ports_are_the_same || ports_are_default || ports_are_omitted)
++                && (schemes_are_the_same
++                    || (url_scheme == "https" || url_scheme == "wss")
+                     || (scheme == "http" && (url_scheme == "http" || url_scheme == "ws")))
+             {
+                 return Matches;
+-- 
+2.43.0
+
