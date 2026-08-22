@@ -695,6 +695,15 @@ impl Embedder {
     // probe it at load time (e.g. monaco-editor's clipboard contrib) and an
     // entire bundle dies on the missing function when the pref is off.
     preferences.dom_exec_command_enabled = true;
+    // CSS Grid is implemented but ships disabled (layout_grid_enabled defaults
+    // to false in servo's components/config/prefs.rs). With it off the
+    // display:grid declaration does not parse and is dropped, so every grid
+    // container silently falls back to its default display -- a <span> stays
+    // inline. Nothing errors; the layout is just quietly wrong, which is how
+    // this survived unnoticed: the app's disclosure caret painted as a
+    // trapezoid only because its container was never a grid, leaving the
+    // ::before in a line box.
+    preferences.layout_grid_enabled = true;
     // The async Clipboard API (`navigator.clipboard`) is likewise implemented
     // behind a pref, and servo's default `clipboard` feature ships a system
     // clipboard delegate on desktop platforms — enabling it lights up copy
