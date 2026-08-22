@@ -22,6 +22,19 @@ out locally, applying the series, and adding to their workspace root:
 servo = { path = "../servo/components/servo" }
 ```
 
+## Landed upstream since the pin
+
+- **CSS Grid now defaults to on** (servo#45621, `76f48dc9e3a`). The
+  runtime's `preferences.layout_grid_enabled = true` and the
+  `runtime-0001-enable-css-grid` patch in the Copse repo both become
+  no-ops when the pin advances past it; `layout_grid_enabled` has also
+  been dropped from `EXPERIMENTAL_PREFS`.
+- **No native SVG layout work has landed or is in flight.** Upstream
+  `main` has no `components/layout/svg/`, and the four commits touching
+  `components/script/dom/svg/` since the pin are refactors (interface
+  subfoldering, `FontContext` plumbing, autofocus, borrow hazards) — not
+  the geometry-interface work Phase 0 would duplicate.
+
 ## Known engine issues (no patch yet)
 
 - **Variable fonts render at the default fvar instance — resolved by a
@@ -200,6 +213,34 @@ servo = { path = "../servo/components/servo" }
   `location.origin` = `tauri://localhost`; localStorage round-trips), and
   the full Copse app boots with its real CSP enforced — including
   `connect-src` matching the loopback WebSocket — with zero violations.
+
+- **0009 — layout: add an SVG viewport behind `layout.svg.native.enabled`.**
+  First step of native SVG layout (plan and phasing:
+  `docs/plans/servo-svg-layout.md` and `servo-svg-agent-brief.md` in the
+  Copse repo). Inline `<svg>` is XML-serialized to a `data:` URL and
+  rasterized, so nothing inside it is a layout participant — which is why
+  CSS animations on SVG descendants never run, and why patches 0003, 0005
+  and 0006 above exist at all: each is a workaround for style not
+  surviving serialization. Adds `components/layout/svg/` with `viewBox` /
+  `preserveAspectRatio` parsing and the viewport transform, and carries
+  `preserveAspectRatio` through `SVGElementData` (layout could not see it
+  before; the rasterizer read it out of the serialized copy).
+  The one behaviour this changes today is the **intrinsic aspect ratio**:
+  `SVGElementData::ratio_from_view_box` parses `viewBox` with
+  `parse_integer`/`parse_unsigned_integer`, so `viewBox="0 0 24.5 12.25"`
+  contributes no ratio at all and the element sizes as if it had none. The
+  new parser implements SVG's `<number>` grammar and the sizing path uses
+  it when the pref is on. Rasterization is untouched, so turning the pref
+  on is not yet a rendering change.
+  *Validated:* nine unit tests over the `viewBox` grammar and the
+  meet/slice × alignment matrix (`scripts/servo-svg-unit-tests.sh` in the
+  Copse repo — servo's own `cargo test` cannot be run in this stack);
+  `cargo build --release -p servo-layout` clean. Not yet WPT-validated —
+  that needs a standalone `./mach build`, which this stack does not have.
+  Seam cost: **21 added lines** across pre-existing files, no deletions.
+  Against upstream `main` (`bd220a15`, 3 weeks past the pin) the patch
+  3-way-applies with a single conflict, a one-line insertion into the
+  sorted `EXPERIMENTAL_PREFS` list.
 
 - **csp-0001 — match `'self'` for custom-scheme origins
   (rust-content-security-policy repo, out of series).** The `'self'`

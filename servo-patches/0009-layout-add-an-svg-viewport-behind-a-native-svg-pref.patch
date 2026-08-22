@@ -1,0 +1,684 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 22 Aug 2026 15:16:38 +0100
+Subject: [PATCH] layout: add an SVG viewport behind layout.svg.native.enabled
+
+First step of native SVG layout. Inline <svg> is currently XML-serialized
+to a data: URL and rasterized by the image cache, so nothing inside it is
+a layout participant -- which is why CSS animations on SVG descendants
+never run, and why getting even static CSS styling into the raster took
+three separate patches. Replacing that means giving <svg> a real viewport
+first: the mapping from the subtree's user coordinates onto the CSS box
+the element was given.
+
+Adds components/layout/svg/ with viewBox and preserveAspectRatio parsing
+and the viewport transform from
+<https://svgwg.org/svg2-draft/coords.html#ComputingAViewportsTransform>,
+covered by unit tests over the meet/slice and alignment matrix.
+
+The one behaviour this changes today is the intrinsic aspect ratio.
+SVGElementData::ratio_from_view_box parses viewBox with parse_integer and
+parse_unsigned_integer, so viewBox="0 0 24.5 12.25" contributes no ratio
+at all and such an element sizes as if it had no viewBox. The new parser
+implements SVG's <number> grammar, and the sizing path in replaced.rs
+consults it when the pref is on. Rasterization is untouched, so turning
+the pref on is not yet a rendering change.
+
+layout.svg.native.enabled defaults to false and is listed in
+EXPERIMENTAL_PREFS. Keeping the rasterization path alive behind it is
+what makes the rest of this work landable while incomplete.
+
+Also carries preserveAspectRatio through SVGElementData; layout had no
+access to it because the rasterizer read it out of the serialized copy.
+
+Seam: 21 added lines across pre-existing files, no deletions.
+---
+ components/config/prefs.rs                 |   5 +
+ components/layout/lib.rs                   |   1 +
+ components/layout/replaced.rs              |  10 +
+ components/layout/svg/mod.rs               | 169 ++++++++++
+ components/layout/svg/viewbox.rs           | 344 +++++++++++++++++++++
+ components/script/dom/svg/svgsvgelement.rs |   3 +
+ components/shared/layout/lib.rs            |   1 +
+ ports/servoshell/prefs.rs                  |   1 +
+ 8 files changed, 534 insertions(+)
+ create mode 100644 components/layout/svg/mod.rs
+ create mode 100644 components/layout/svg/viewbox.rs
+
+diff --git a/components/config/prefs.rs b/components/config/prefs.rs
+index 9c1ff9469c1..489178a8a3b 100644
+--- a/components/config/prefs.rs
++++ b/components/config/prefs.rs
+@@ -320,6 +320,10 @@ pub struct Preferences {
+     pub layout_css_ellipse_corners_enabled: bool,
+     pub layout_css_progress_function_enabled: bool,
+     pub layout_style_sharing_cache_enabled: bool,
++    /// Lay out and paint inline `<svg>` natively, instead of serializing the
++    /// subtree to a `data:` URL and rasterizing it as a replaced image.
++    // feature: Native SVG layout | #12973 | Web/SVG
++    pub layout_svg_native_enabled: bool,
+     pub layout_threads: i64,
+     /// The minimum number of parallelizable jobs required before turning on parallelism
+     /// for a set of jobs.
+@@ -559,6 +563,7 @@ impl Preferences {
+             layout_css_progress_function_enabled: false,
+             layout_grid_enabled: false,
+             layout_style_sharing_cache_enabled: true,
++            layout_svg_native_enabled: false,
+             // TODO(mrobinson): This should likely be based on the number of processors.
+             layout_threads: 3,
+             layout_parallelism_job_count_minimum: 4,
+diff --git a/components/layout/lib.rs b/components/layout/lib.rs
+index 1a066e4cd58..9c02d33382b 100644
+--- a/components/layout/lib.rs
++++ b/components/layout/lib.rs
+@@ -31,6 +31,7 @@ mod quotes;
+ mod replaced;
+ mod sizing;
+ mod style_ext;
++mod svg;
+ pub mod table;
+ mod traversal;
+ 
+diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
+index 66859f743f2..ffa6ce767b0 100644
+--- a/components/layout/replaced.rs
++++ b/components/layout/replaced.rs
+@@ -46,6 +46,7 @@ use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBox
+ use crate::sizing::{
+     ComputeInlineContentSizes, InlineContentSizesResult, LazySize, SizeConstraint,
+ };
++use crate::svg::{SVGViewport, native_svg_enabled};
+ use crate::style_ext::{AspectRatio, Clamp, ComputedValuesExt, LayoutStyle};
+ use crate::{ConstraintSpace, ContainingBlock};
+ 
+@@ -271,10 +272,19 @@ impl ReplacedContents {
+         let width = svg_data.width.and_then(attr_to_computed);
+         let height = svg_data.height.and_then(attr_to_computed);
+ 
++        // `SVGElementData::ratio_from_view_box` parses `viewBox` with the
++        // integer parsers, so `viewBox="0 0 24.5 12.25"` contributes no
++        // intrinsic ratio at all. The native path parses SVG's number grammar
++        // instead, via the viewport it will also use to place the subtree.
++        let viewport = SVGViewport::new(
++            svg_data.view_box.map(|value| &**value),
++            svg_data.preserve_aspect_ratio.map(|value| &**value),
++        );
+         let ratio = match (width, height) {
+             (Some(width), Some(height)) if !width.is_zero() && !height.is_zero() => {
+                 Some(width.px() / height.px())
+             },
++            _ if native_svg_enabled() => viewport.aspect_ratio(),
+             _ => svg_data.ratio_from_view_box(),
+         };
+ 
+diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
+new file mode 100644
+index 00000000000..87f5a6317b1
+--- /dev/null
++++ b/components/layout/svg/mod.rs
+@@ -0,0 +1,169 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Native layout for inline `<svg>`.
++//!
++//! Today an inline `<svg>` is XML-serialized to a `data:` URL and rasterized by
++//! the image cache (see [`crate::replaced`]), so nothing inside it is a layout
++//! participant. This module is the beginning of the replacement: the subtree
++//! keeps its computed styles and is laid out and painted in-process.
++//!
++//! The whole path is gated on the `layout.svg.native.enabled` preference,
++//! which is off by default, so the rasterization path stays live and each
++//! piece is landable while the rest is incomplete.
++//!
++//! Currently implemented: the SVG viewport, i.e. the `viewBox` /
++//! `preserveAspectRatio` transform from user space to the CSS box the element
++//! occupies. Geometry traversal and painting are not yet here.
++
++// Phase 1 establishes the viewport; the transform it computes is consumed by
++// the geometry traversal in the next phase, so parts of this module have no
++// caller yet. Remove this once that lands.
++#![expect(dead_code)]
++
++use euclid::default::{Size2D, Transform2D};
++use servo_config::pref;
++
++pub(crate) mod viewbox;
++
++use viewbox::{MeetOrSlice, PreserveAspectRatio, ViewBox};
++
++/// Whether inline `<svg>` should be laid out natively rather than rasterized.
++pub(crate) fn native_svg_enabled() -> bool {
++    pref!(layout_svg_native_enabled)
++}
++
++/// The SVG viewport established by an `<svg>` element: everything needed to map
++/// the subtree's user coordinates onto the CSS box the element was given.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub(crate) struct SVGViewport {
++    /// `None` when the attribute is absent or invalid, in which case user space
++    /// is the viewport's own coordinate system.
++    pub view_box: Option<ViewBox>,
++    pub preserve_aspect_ratio: PreserveAspectRatio,
++}
++
++impl SVGViewport {
++    pub(crate) fn new(view_box: Option<&str>, preserve_aspect_ratio: Option<&str>) -> Self {
++        Self {
++            view_box: view_box.and_then(ViewBox::parse),
++            preserve_aspect_ratio: preserve_aspect_ratio
++                .map(PreserveAspectRatio::parse_or_default)
++                .unwrap_or_default(),
++        }
++    }
++
++    /// The intrinsic aspect ratio contributed by `viewBox`, used when the
++    /// element has no `width`/`height` of its own.
++    pub(crate) fn aspect_ratio(&self) -> Option<f32> {
++        self.view_box.map(|view_box| view_box.aspect_ratio())
++    }
++
++    /// The transform from SVG user space to the viewport's coordinate system,
++    /// whose origin is the top-left of the element's content box.
++    ///
++    /// <https://svgwg.org/svg2-draft/coords.html#ComputingAViewportsTransform>
++    pub(crate) fn transform(&self, viewport_size: Size2D<f32>) -> Transform2D<f32> {
++        let Some(view_box) = self.view_box else {
++            return Transform2D::identity();
++        };
++
++        let mut scale_x = viewport_size.width / view_box.width;
++        let mut scale_y = viewport_size.height / view_box.height;
++
++        // `none` is the only value that scales non-uniformly.
++        let align = self.preserve_aspect_ratio.align;
++        if align != viewbox::Align::None {
++            let uniform_scale = match self.preserve_aspect_ratio.meet_or_slice {
++                MeetOrSlice::Meet => scale_x.min(scale_y),
++                MeetOrSlice::Slice => scale_x.max(scale_y),
++            };
++            scale_x = uniform_scale;
++            scale_y = uniform_scale;
++        }
++
++        // Whatever the uniform scale left over (negative under `slice`) is
++        // distributed according to the alignment.
++        let leftover_x = viewport_size.width - view_box.width * scale_x;
++        let leftover_y = viewport_size.height - view_box.height * scale_y;
++        let translate_x = leftover_x * align.x_fraction() - view_box.min_x * scale_x;
++        let translate_y = leftover_y * align.y_fraction() - view_box.min_y * scale_y;
++
++        Transform2D::scale(scale_x, scale_y).then_translate(euclid::vec2(translate_x, translate_y))
++    }
++}
++
++#[cfg(test)]
++mod test {
++    use euclid::default::{Point2D, Size2D};
++
++    use super::SVGViewport;
++
++    /// The viewport used by the worked examples in the SVG 2 spec's
++    /// `preserveAspectRatio` section: a 300x200 viewBox shown in boxes that do
++    /// not match its ratio.
++    fn map(view_box: &str, preserve_aspect_ratio: &str, size: (f32, f32), point: (f32, f32)) -> (f32, f32) {
++        let viewport = SVGViewport::new(Some(view_box), Some(preserve_aspect_ratio));
++        let mapped = viewport
++            .transform(Size2D::new(size.0, size.1))
++            .transform_point(Point2D::new(point.0, point.1));
++        ((mapped.x * 1e4).round() / 1e4, (mapped.y * 1e4).round() / 1e4)
++    }
++
++    #[test]
++    fn no_view_box_is_the_identity() {
++        let viewport = SVGViewport::new(None, None);
++        assert_eq!(
++            viewport.transform(Size2D::new(100., 50.)),
++            euclid::default::Transform2D::identity()
++        );
++        assert_eq!(viewport.aspect_ratio(), None);
++    }
++
++    #[test]
++    fn align_none_scales_non_uniformly() {
++        // 300x200 viewBox into a 150x200 viewport: 0.5 across, 1.0 down.
++        assert_eq!(map("0 0 300 200", "none", (150., 200.), (300., 200.)), (150., 200.));
++        assert_eq!(map("0 0 300 200", "none", (150., 200.), (150., 100.)), (75., 100.));
++    }
++
++    #[test]
++    fn meet_fits_and_centres() {
++        // Uniform scale is min(150/300, 200/200) = 0.5, so the content is
++        // 150x100 in a 150x200 box and xMidYMid centres it vertically.
++        assert_eq!(map("0 0 300 200", "xMidYMid meet", (150., 200.), (0., 0.)), (0., 50.));
++        assert_eq!(
++            map("0 0 300 200", "xMidYMid meet", (150., 200.), (300., 200.)),
++            (150., 150.)
++        );
++        // xMinYMin pins to the top-left instead.
++        assert_eq!(map("0 0 300 200", "xMinYMin meet", (150., 200.), (0., 0.)), (0., 0.));
++        // xMaxYMax pushes the leftover space before the content.
++        assert_eq!(map("0 0 300 200", "xMaxYMax meet", (150., 200.), (0., 0.)), (0., 100.));
++    }
++
++    #[test]
++    fn slice_covers_and_overflows() {
++        // Uniform scale is max(150/300, 200/200) = 1.0, so the content is
++        // 300x200 in a 150x200 box; centring pushes it 75 to the left.
++        assert_eq!(map("0 0 300 200", "xMidYMid slice", (150., 200.), (0., 0.)), (-75., 0.));
++        assert_eq!(map("0 0 300 200", "xMinYMin slice", (150., 200.), (0., 0.)), (0., 0.));
++        assert_eq!(map("0 0 300 200", "xMaxYMax slice", (150., 200.), (0., 0.)), (-150., 0.));
++    }
++
++    #[test]
++    fn min_x_and_min_y_offset_the_origin() {
++        // A viewBox origin of (10, 20) at scale 2 puts user-space (10, 20) at
++        // the top-left of the viewport.
++        assert_eq!(map("10 20 50 50", "xMidYMid meet", (100., 100.), (10., 20.)), (0., 0.));
++        assert_eq!(map("10 20 50 50", "xMidYMid meet", (100., 100.), (60., 70.)), (100., 100.));
++    }
++
++    #[test]
++    fn view_box_supplies_the_aspect_ratio() {
++        assert_eq!(SVGViewport::new(Some("0 0 24.5 49"), None).aspect_ratio(), Some(0.5));
++        // Invalid viewBoxes contribute nothing.
++        assert_eq!(SVGViewport::new(Some("0 0 -1 1"), None).aspect_ratio(), None);
++    }
++}
+diff --git a/components/layout/svg/viewbox.rs b/components/layout/svg/viewbox.rs
+new file mode 100644
+index 00000000000..d940a11267d
+--- /dev/null
++++ b/components/layout/svg/viewbox.rs
+@@ -0,0 +1,344 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Parsing for the `viewBox` and `preserveAspectRatio` attributes.
++//!
++//! These use SVG's own attribute grammar, not CSS's, so they cannot go through
++//! stylo: `viewBox` is a `<list-of-four-numbers>` separated by comma-wsp, and
++//! `preserveAspectRatio` is a keyword pair. See
++//! <https://svgwg.org/svg2-draft/coords.html#ViewBoxAttribute> and
++//! <https://svgwg.org/svg2-draft/coords.html#PreserveAspectRatioAttribute>.
++//!
++//! Note that `layout_api::SVGElementData::ratio_from_view_box` parses `viewBox`
++//! with the *integer* parsers, so `viewBox="0 0 24.5 24"` yields no intrinsic
++//! ratio at all. That is a pre-existing bug on the rasterization path; the
++//! native path uses the number grammar below instead.
++
++/// A parsed `viewBox`, guaranteed to have non-negative width and height.
++///
++/// A negative width or height is an error per spec (the element is not
++/// rendered); a zero width or height disables rendering of the element. Both
++/// cases parse to `None` here, so a `ViewBox` value is always usable.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) struct ViewBox {
++    pub min_x: f32,
++    pub min_y: f32,
++    pub width: f32,
++    pub height: f32,
++}
++
++impl ViewBox {
++    /// <https://svgwg.org/svg2-draft/coords.html#ViewBoxAttribute>
++    pub(crate) fn parse(input: &str) -> Option<Self> {
++        let mut parser = NumberListParser::new(input);
++        let min_x = parser.next_number()?;
++        let min_y = parser.next_number()?;
++        let width = parser.next_number()?;
++        let height = parser.next_number()?;
++        if !parser.at_end() {
++            return None;
++        }
++        // Negative is an error, zero disables rendering; neither yields a
++        // usable viewport transform.
++        if !(width > 0. && height > 0.) {
++            return None;
++        }
++        Some(Self {
++            min_x,
++            min_y,
++            width,
++            height,
++        })
++    }
++
++    pub(crate) fn aspect_ratio(&self) -> f32 {
++        self.width / self.height
++    }
++}
++
++/// The alignment half of `preserveAspectRatio`.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub(crate) enum Align {
++    /// `none` — scale non-uniformly so the viewBox exactly fills the viewport.
++    None,
++    XMinYMin,
++    XMidYMin,
++    XMaxYMin,
++    XMinYMid,
++    #[default]
++    XMidYMid,
++    XMaxYMid,
++    XMinYMax,
++    XMidYMax,
++    XMaxYMax,
++}
++
++impl Align {
++    /// The fraction of the leftover horizontal space placed before the
++    /// content: 0 for `xMin`, 0.5 for `xMid`, 1 for `xMax`.
++    pub(crate) fn x_fraction(&self) -> f32 {
++        match self {
++            Align::None => 0.,
++            Align::XMinYMin | Align::XMinYMid | Align::XMinYMax => 0.,
++            Align::XMidYMin | Align::XMidYMid | Align::XMidYMax => 0.5,
++            Align::XMaxYMin | Align::XMaxYMid | Align::XMaxYMax => 1.,
++        }
++    }
++
++    /// The fraction of the leftover vertical space placed before the content.
++    pub(crate) fn y_fraction(&self) -> f32 {
++        match self {
++            Align::None => 0.,
++            Align::XMinYMin | Align::XMidYMin | Align::XMaxYMin => 0.,
++            Align::XMinYMid | Align::XMidYMid | Align::XMaxYMid => 0.5,
++            Align::XMinYMax | Align::XMidYMax | Align::XMaxYMax => 1.,
++        }
++    }
++}
++
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub(crate) enum MeetOrSlice {
++    /// Scale uniformly to fit the whole viewBox inside the viewport.
++    #[default]
++    Meet,
++    /// Scale uniformly to cover the whole viewport.
++    Slice,
++}
++
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub(crate) struct PreserveAspectRatio {
++    pub align: Align,
++    pub meet_or_slice: MeetOrSlice,
++}
++
++impl PreserveAspectRatio {
++    /// <https://svgwg.org/svg2-draft/coords.html#PreserveAspectRatioAttribute>
++    ///
++    /// An unparseable value falls back to the initial value, matching the
++    /// error-handling other UAs apply to this attribute.
++    pub(crate) fn parse_or_default(input: &str) -> Self {
++        Self::parse(input).unwrap_or_default()
++    }
++
++    fn parse(input: &str) -> Option<Self> {
++        let mut tokens = input.split_ascii_whitespace();
++        let mut token = tokens.next()?;
++        // `defer` is only meaningful on the `<image>` that references content,
++        // never on the referenced `<svg>` itself, so it is accepted and
++        // ignored here.
++        if token == "defer" {
++            token = tokens.next()?;
++        }
++        let align = match token {
++            "none" => Align::None,
++            "xMinYMin" => Align::XMinYMin,
++            "xMidYMin" => Align::XMidYMin,
++            "xMaxYMin" => Align::XMaxYMin,
++            "xMinYMid" => Align::XMinYMid,
++            "xMidYMid" => Align::XMidYMid,
++            "xMaxYMid" => Align::XMaxYMid,
++            "xMinYMax" => Align::XMinYMax,
++            "xMidYMax" => Align::XMidYMax,
++            "xMaxYMax" => Align::XMaxYMax,
++            _ => return None,
++        };
++        let meet_or_slice = match tokens.next() {
++            None => MeetOrSlice::Meet,
++            Some("meet") => MeetOrSlice::Meet,
++            Some("slice") => MeetOrSlice::Slice,
++            Some(_) => return None,
++        };
++        if tokens.next().is_some() {
++            return None;
++        }
++        Some(Self {
++            align,
++            meet_or_slice,
++        })
++    }
++}
++
++/// A comma-wsp separated list of SVG `<number>`s.
++///
++/// SVG's number grammar is not CSS's: it accepts a leading `+`, a bare `.5`,
++/// and an exponent, but not units. `str::parse::<f32>` additionally accepts
++/// `inf`, `nan` and hex floats, so the token is scanned by hand first.
++struct NumberListParser<'a> {
++    input: &'a str,
++    position: usize,
++    /// Set once a number has been read, after which a separator is required.
++    expect_separator: bool,
++}
++
++impl<'a> NumberListParser<'a> {
++    fn new(input: &'a str) -> Self {
++        Self {
++            input,
++            position: 0,
++            expect_separator: false,
++        }
++    }
++
++    fn rest(&self) -> &'a str {
++        &self.input[self.position..]
++    }
++
++    /// comma-wsp: at most one comma, surrounded by any amount of whitespace.
++    fn skip_comma_wsp(&mut self) -> bool {
++        let mut saw_separator = false;
++        let mut seen_comma = false;
++        for character in self.rest().chars() {
++            match character {
++                ' ' | '\t' | '\r' | '\n' => {},
++                ',' if !seen_comma => seen_comma = true,
++                _ => break,
++            }
++            saw_separator = true;
++            self.position += character.len_utf8();
++        }
++        saw_separator
++    }
++
++    fn at_end(&mut self) -> bool {
++        self.skip_comma_wsp();
++        self.rest().is_empty()
++    }
++
++    fn next_number(&mut self) -> Option<f32> {
++        let had_separator = self.skip_comma_wsp();
++        if self.expect_separator && !had_separator {
++            return None;
++        }
++
++        let rest = self.rest();
++        let mut end = 0;
++        let bytes = rest.as_bytes();
++
++        if matches!(bytes.first(), Some(b'+' | b'-')) {
++            end += 1;
++        }
++        let integer_digits = bytes[end..]
++            .iter()
++            .take_while(|byte| byte.is_ascii_digit())
++            .count();
++        end += integer_digits;
++
++        let mut fraction_digits = 0;
++        if bytes.get(end) == Some(&b'.') {
++            end += 1;
++            fraction_digits = bytes[end..]
++                .iter()
++                .take_while(|byte| byte.is_ascii_digit())
++                .count();
++            end += fraction_digits;
++        }
++        if integer_digits == 0 && fraction_digits == 0 {
++            return None;
++        }
++
++        if matches!(bytes.get(end), Some(b'e' | b'E')) {
++            let mut exponent_end = end + 1;
++            if matches!(bytes.get(exponent_end), Some(b'+' | b'-')) {
++                exponent_end += 1;
++            }
++            let exponent_digits = bytes[exponent_end..]
++                .iter()
++                .take_while(|byte| byte.is_ascii_digit())
++                .count();
++            // A trailing `e` with no digits is not part of the number; leave it
++            // for the caller to reject as trailing garbage.
++            if exponent_digits > 0 {
++                end = exponent_end + exponent_digits;
++            }
++        }
++
++        let number: f32 = rest[..end].parse().ok()?;
++        if !number.is_finite() {
++            return None;
++        }
++        self.position += end;
++        self.expect_separator = true;
++        Some(number)
++    }
++}
++
++#[cfg(test)]
++mod test {
++    use super::{Align, MeetOrSlice, PreserveAspectRatio, ViewBox};
++
++    fn view_box(min_x: f32, min_y: f32, width: f32, height: f32) -> Option<ViewBox> {
++        Some(ViewBox {
++            min_x,
++            min_y,
++            width,
++            height,
++        })
++    }
++
++    #[test]
++    fn parses_the_number_grammar() {
++        assert_eq!(ViewBox::parse("0 0 24 24"), view_box(0., 0., 24., 24.));
++        assert_eq!(ViewBox::parse("0,0,24,24"), view_box(0., 0., 24., 24.));
++        assert_eq!(
++            ViewBox::parse("  0 , 0 , 24 , 24  "),
++            view_box(0., 0., 24., 24.)
++        );
++        // Fractional values, which `ratio_from_view_box` cannot parse.
++        assert_eq!(
++            ViewBox::parse("0 0 24.5 12.25"),
++            view_box(0., 0., 24.5, 12.25)
++        );
++        assert_eq!(ViewBox::parse("-.5 +.5 1e1 2E+1"), view_box(-0.5, 0.5, 10., 20.));
++        assert_eq!(ViewBox::parse("0 0 1e-1 1"), view_box(0., 0., 0.1, 1.));
++    }
++
++    #[test]
++    fn rejects_malformed_view_boxes() {
++        assert_eq!(ViewBox::parse(""), None);
++        assert_eq!(ViewBox::parse("0 0 24"), None);
++        assert_eq!(ViewBox::parse("0 0 24 24 24"), None);
++        // Two commas is not a valid comma-wsp separator.
++        assert_eq!(ViewBox::parse("0,,0,24,24"), None);
++        // Adjacent numbers need a separator.
++        assert_eq!(ViewBox::parse("0 0 24 24px"), None);
++        assert_eq!(ViewBox::parse("0 0 24 2e"), None);
++        assert_eq!(ViewBox::parse("0 0 inf 24"), None);
++        assert_eq!(ViewBox::parse("0 0 nan 24"), None);
++        // Negative is an error, zero disables rendering.
++        assert_eq!(ViewBox::parse("0 0 -24 24"), None);
++        assert_eq!(ViewBox::parse("0 0 24 0"), None);
++    }
++
++    #[test]
++    fn parses_preserve_aspect_ratio() {
++        let parse = PreserveAspectRatio::parse_or_default;
++        assert_eq!(parse("xMidYMid meet"), PreserveAspectRatio::default());
++        assert_eq!(
++            parse("xMinYMax slice"),
++            PreserveAspectRatio {
++                align: Align::XMinYMax,
++                meet_or_slice: MeetOrSlice::Slice,
++            }
++        );
++        // `meet` is the default when omitted; `defer` is ignored.
++        assert_eq!(
++            parse("defer xMaxYMin"),
++            PreserveAspectRatio {
++                align: Align::XMaxYMin,
++                meet_or_slice: MeetOrSlice::Meet,
++            }
++        );
++        assert_eq!(
++            parse("none"),
++            PreserveAspectRatio {
++                align: Align::None,
++                meet_or_slice: MeetOrSlice::Meet,
++            }
++        );
++        // Invalid values fall back to the initial value rather than to `none`.
++        assert_eq!(parse("xmidymid"), PreserveAspectRatio::default());
++        assert_eq!(parse(""), PreserveAspectRatio::default());
++        assert_eq!(parse("xMidYMid fit"), PreserveAspectRatio::default());
++    }
++}
+diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
+index 5f38f8351ea..dfea562b40b 100644
+--- a/components/script/dom/svg/svgsvgelement.rs
++++ b/components/script/dom/svg/svgsvgelement.rs
+@@ -211,6 +211,8 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
+         let width = element.get_attr_for_layout(&ns!(), &local_name!("width"));
+         let height = element.get_attr_for_layout(&ns!(), &local_name!("height"));
+         let view_box = element.get_attr_for_layout(&ns!(), &local_name!("viewBox"));
++        let preserve_aspect_ratio =
++            element.get_attr_for_layout(&ns!(), &local_name!("preserveAspectRatio"));
+         SVGElementData {
+             source: self
+                 .unsafe_get()
+@@ -220,6 +222,7 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
+             width,
+             height,
+             view_box,
++            preserve_aspect_ratio,
+             svg_id,
+         }
+     }
+diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
+index e82d369e539..d4960578b61 100644
+--- a/components/shared/layout/lib.rs
++++ b/components/shared/layout/lib.rs
+@@ -166,6 +166,7 @@ pub struct SVGElementData<'dom> {
+     pub height: Option<&'dom AttrValue>,
+     pub svg_id: Uuid,
+     pub view_box: Option<&'dom AttrValue>,
++    pub preserve_aspect_ratio: Option<&'dom AttrValue>,
+ }
+ 
+ impl SVGElementData<'_> {
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index d82e3c6229b..3441f2603f6 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -52,6 +52,7 @@ pub(crate) static EXPERIMENTAL_PREFS: &[&str] = &[
+     "layout_columns_enabled",
+     "layout_container_queries_enabled",
+     "layout_grid_enabled",
++    "layout_svg_native_enabled",
+     "layout_variable_fonts_enabled",
+ ];
+ 
