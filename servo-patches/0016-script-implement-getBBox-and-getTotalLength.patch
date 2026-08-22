@@ -1,0 +1,514 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 22 Aug 2026 20:04:42 +0100
+Subject: [PATCH] script: implement getBBox and getTotalLength
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Both were commented out in the WebIDL, so calling either threw
+TypeError. They are cheap now: layout already resolves SVG geometry into
+kurbo paths for painting, so a bounding box and a perimeter are one call
+each. The geometry is resolved on demand from computed style rather than
+read off the painted tree, which does not record which DOM node each
+shape came from.
+
+getBBox on a container is the union of its children's boxes, each mapped
+through that child's own transform, and the <svg> element is its own
+viewport for this purpose. Returning an empty rect for containers would
+have been silently wrong for the commonest shape in real content, a
+shape wrapped in a <g>.
+
+getTotalLength reports the length already renormalized by pathLength,
+since reporting the raw length would contradict what the dash pattern
+does with the same attribute.
+
+Two things this does not do. getBBox's options argument (stroke,
+markers, clipped) is parsed and ignored — only the default fill box is
+computed, so a non-default request returns the same box rather than a
+wrong one. And with layout.svg.native.enabled off, only direct children
+of the <svg> resolve: svg > * { display: none } gives them computed
+styles but prunes the traversal below, so anything inside a <g> reports
+an empty box.
+
+Fixes a latent crash while here. Both this query and the Phase 4
+node_rendering_type check walk DOM parents, and every walk that does not
+find an <svg> reaches the Document, where type_id panics with "Layout
+should not traverse nodes of type Document". The animation walk has had
+this bug since it landed; it went unnoticed because it only runs for
+boxless nodes, and the tests that exercised it all had an <svg>
+ancestor. Both now stop at the first non-element.
+
+svg/ WPT, same build, pref off vs on: +188 subtests, zero regressions
+(was +1). Almost all of it is idlharness finally seeing the two
+operations, plus getBBox-04 — containers with children added and removed
+— which now passes outright.
+---
+ components/layout/dom_traversal.rs            |   8 +
+ components/layout/layout_impl.rs              |  15 ++
+ components/layout/svg/integration.rs          | 146 ++++++++++++++++++
+ components/layout/svg/tree.rs                 |   2 +-
+ .../script/dom/svg/svggeometryelement.rs      |  23 +++
+ .../script/dom/svg/svggraphicselement.rs      |  40 +++++
+ components/script/dom/window/window.rs        |   9 ++
+ .../script_bindings/codegen/Bindings.conf     |   4 +
+ .../webidls/SVGGeometryElement.webidl         |   2 +-
+ .../webidls/SVGGraphicsElement.webidl         |  15 +-
+ components/shared/layout/lib.rs               |  20 +++
+ 11 files changed, 275 insertions(+), 9 deletions(-)
+
+diff --git a/components/layout/dom_traversal.rs b/components/layout/dom_traversal.rs
+index 7f30c7ceda6..23bdc266583 100644
+--- a/components/layout/dom_traversal.rs
++++ b/components/layout/dom_traversal.rs
+@@ -225,6 +225,14 @@ fn traverse_eager_pseudo_element<'dom>(
+         return;
+     }
+ 
++    if std::env::var_os("COPSE_SERVO_PSEUDO_DEBUG").is_some() {
++        eprintln!(
++            "[pseudo] {:?} display={:?} parent_display={:?}",
++            pseudo_element_type,
++            pseudo_element_info.style.get_box().display,
++            node_info.style.get_box().display,
++        );
++    }
+     match Display::from(pseudo_element_info.style.get_box().display) {
+         Display::None => {},
+         Display::Contents => {
+diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
+index 45eb3b853f1..e5ed40bb512 100644
+--- a/components/layout/layout_impl.rs
++++ b/components/layout/layout_impl.rs
+@@ -476,6 +476,18 @@ impl Layout for LayoutThread {
+         })
+     }
+ 
++    #[servo_tracing::instrument(skip_all)]
++    fn query_svg_geometry(&self, node: TrustedNodeAddress) -> Option<layout_api::SVGGeometry> {
++        with_layout_state(|| {
++            let node = unsafe { ServoLayoutNode::new(&node) };
++            // Safety: a synchronous script query, so no layout workers run.
++            #[expect(unsafe_code)]
++            unsafe {
++                crate::svg::integration::svg_geometry(node)
++            }
++        })
++    }
++
+     #[servo_tracing::instrument(skip_all)]
+     fn query_element_inner_outer_text(&self, node: layout_api::TrustedNodeAddress) -> String {
+         with_layout_state(|| {
+@@ -1958,6 +1970,9 @@ impl ReflowPhases {
+                 QueryMsg::PaddingQuery |
+                 QueryMsg::ResolvedFontStyleQuery |
+                 QueryMsg::ScrollParentQuery |
++                // Geometry is resolved from computed style, so styling is the
++                // only phase it needs.
++                QueryMsg::SVGGeometryQuery |
+                 QueryMsg::StyleQuery => Self::empty(),
+             },
+             ReflowGoal::UpdateScrollNode(..) | ReflowGoal::UpdateTheRendering => {
+diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
+index 53f793ab3db..e4d2a55c724 100644
+--- a/components/layout/svg/integration.rs
++++ b/components/layout/svg/integration.rs
+@@ -16,6 +16,8 @@ use kurbo::Affine;
+ use script::layout_dom::ServoLayoutNode;
+ use webrender_api::units::DeviceIntSize;
+ 
++use web_atoms::{LocalName, local_name, ns};
++
+ use super::{NativeSVG, SVGViewport, native_svg_enabled, tree};
+ use crate::context::LayoutContext;
+ use crate::fragment_tree::{BaseFragment, Fragment, ImageFragment};
+@@ -142,6 +144,11 @@ pub(crate) unsafe fn rendering_type_in_native_subtree(
+     // The walk is short in practice and only runs for nodes with no box.
+     let mut ancestor = unsafe { node.dangerous_dom_parent() };
+     while let Some(current) = ancestor {
++        // `type_id` panics on a Document, which every walk reaches if it does
++        // not find an `<svg>` first, so stop at the first non-element.
++        if current.as_element().is_none() {
++            break;
++        }
+         if current.type_id() == Some(LayoutNodeType::Element(LayoutElementType::SVGSVGElement)) {
+             return NodeRenderingType::Rendered;
+         }
+@@ -149,3 +156,142 @@ pub(crate) unsafe fn rendering_type_in_native_subtree(
+     }
+     NodeRenderingType::NotRendered
+ }
++
++/// The geometry of an SVG shape in its own user space, for `getBBox` and
++/// `getTotalLength`.
++///
++/// Resolved on demand from computed style rather than read off the painted
++/// tree: the tree does not record which DOM node each shape came from, and
++/// recomputing one shape is cheap next to keeping that mapping alive.
++///
++/// # Safety
++///
++/// Walks DOM parents to find the enclosing viewport, so it may only be called
++/// from the script thread with no layout workers running. `Layout::query_*`
++/// satisfies that.
++#[expect(unsafe_code)]
++pub(crate) unsafe fn svg_geometry(node: ServoLayoutNode<'_>) -> Option<layout_api::SVGGeometry> {
++    use kurbo::Shape as _;
++    use layout_api::{LayoutElement as _, LayoutNode as _};
++
++    // Percentage geometry resolves against the nearest viewport, so the basis
++    // has to come from the enclosing `<svg>`, not from this element.
++    let basis = unsafe { enclosing_viewport_basis(node) }?;
++    let (bounds, total_length) = unsafe { bounds_of(node, basis) }?;
++    Some(layout_api::SVGGeometry {
++        x: bounds.x0 as f32,
++        y: bounds.y0 as f32,
++        width: bounds.width() as f32,
++        height: bounds.height() as f32,
++        total_length: total_length as f32,
++    })
++}
++
++/// The union of a subtree's geometry, in `node`'s own user space, and the path
++/// length of `node` itself.
++///
++/// A container has no geometry of its own; `getBBox` on it is the union of its
++/// children's boxes, each mapped through that child's transform. Returning an
++/// empty rect instead would be silently wrong for the commonest case in real
++/// content, a shape wrapped in a `<g>`.
++///
++/// # Safety
++///
++/// As [`svg_geometry`].
++#[expect(unsafe_code)]
++unsafe fn bounds_of(
++    node: ServoLayoutNode<'_>,
++    basis: super::paint::PercentageBasis,
++) -> Option<(kurbo::Rect, f64)> {
++    use kurbo::Shape as _;
++    use layout_api::{LayoutElement as _, LayoutNode as _};
++
++    let element = node.as_element()?;
++    let style = tree::primary_style(element)?;
++
++    if let Some(path) = super::resolve::shape(element, &style, basis) {
++        // `getTotalLength` is only defined on geometry elements, but the
++        // perimeter of any shape is well defined, so it is always reported.
++        return Some((path.bounding_box(), path.perimeter(0.01)));
++    }
++
++    let mut union: Option<kurbo::Rect> = None;
++    for child in node.dom_children() {
++        let Some((child_bounds, _)) = (unsafe { bounds_of(child, basis) }) else {
++            continue;
++        };
++        // Each child's box is reported in the child's space; bring it into
++        // this element's by its own transform.
++        let Some(child_element) = child.as_element() else {
++            continue;
++        };
++        let Some(child_style) = tree::primary_style(child_element) else {
++            continue;
++        };
++        let transformed = (super::resolve::transform(child_element, &child_style, basis) *
++            child_bounds.to_path(0.01))
++        .bounding_box();
++        union = Some(match union {
++            Some(existing) => existing.union(transformed),
++            None => transformed,
++        });
++    }
++    union.map(|bounds| (bounds, 0.))
++}
++
++/// The percentage basis of the `<svg>` viewport enclosing `node`.
++///
++/// # Safety
++///
++/// As [`svg_geometry`].
++#[expect(unsafe_code)]
++unsafe fn enclosing_viewport_basis(
++    node: ServoLayoutNode<'_>,
++) -> Option<super::paint::PercentageBasis> {
++    use layout_api::{LayoutElement as _, LayoutElementType, LayoutNode as _, LayoutNodeType};
++
++    use crate::dom::NodeExt as _;
++
++    // `getBBox` is defined on the `<svg>` element too, and there the viewport
++    // it establishes is its own.
++    let mut ancestor = Some(node);
++    while let Some(current) = ancestor {
++        let Some(element) = current.as_element() else {
++            // A Document, which `type_id` panics on. Nothing above it can be
++            // an SVG viewport.
++            break;
++        };
++        if current.type_id() == Some(LayoutNodeType::Element(LayoutElementType::SVGSVGElement)) {
++            let svg_data = current.as_svg()?;
++            let viewport = SVGViewport::new(
++                svg_data.view_box.map(|value| &**value),
++                svg_data.preserve_aspect_ratio.map(|value| &**value),
++            );
++            // Inside a viewBox, percentages resolve against it. Without one
++            // the CSS box decides, and the used size is not available from a
++            // script query, so fall back to the attribute-declared size.
++            let (width, height) = match viewport.view_box {
++                Some(view_box) => (view_box.width as f64, view_box.height as f64),
++                None => (
++                    attribute_length(element, &local_name!("width")),
++                    attribute_length(element, &local_name!("height")),
++                ),
++            };
++            return Some(super::paint::PercentageBasis::for_viewport(width, height));
++        }
++        ancestor = unsafe { current.dangerous_dom_parent() };
++    }
++    None
++}
++
++fn attribute_length(element: script::layout_dom::ServoLayoutElement<'_>, name: &LocalName) -> f64 {
++    use layout_api::LayoutElement as _;
++
++    element
++        .attribute_as_str(&ns!(), name)
++        .and_then(|value| {
++            let mut parser = super::number::NumberListParser::new(value);
++            parser.next_number()
++        })
++        .unwrap_or(0.) as f64
++}
+diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
+index 3b5f0b147a4..efb2bef9afa 100644
+--- a/components/layout/svg/tree.rs
++++ b/components/layout/svg/tree.rs
+@@ -169,7 +169,7 @@ fn build_node(
+ 
+ /// The element's primary computed style, or `None` if the style system never
+ /// gave it one.
+-fn primary_style(element: ServoLayoutElement<'_>) -> Option<servo_arc::Arc<ComputedValues>> {
++pub(crate) fn primary_style(element: ServoLayoutElement<'_>) -> Option<servo_arc::Arc<ComputedValues>> {
+     element
+         .style_data()
+         .map(|style_data| style_data.element_data.borrow())
+diff --git a/components/script/dom/svg/svggeometryelement.rs b/components/script/dom/svg/svggeometryelement.rs
+index c3d5e604d33..a48ea02ba55 100644
+--- a/components/script/dom/svg/svggeometryelement.rs
++++ b/components/script/dom/svg/svggeometryelement.rs
+@@ -9,6 +9,9 @@ use stylo_dom::ElementState;
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::document::Document;
+ use crate::dom::node::virtualmethods::VirtualMethods;
++use crate::dom::bindings::codegen::Bindings::SVGGeometryElementBinding::SVGGeometryElementMethods;
++use crate::dom::bindings::num::Finite;
++use crate::dom::node::{Node, NodeTraits};
+ use crate::dom::svg::svggraphicselement::SVGGraphicsElement;
+ 
+ #[dom_struct]
+@@ -44,6 +47,26 @@ impl SVGGeometryElement {
+     }
+ }
+ 
++impl SVGGeometryElementMethods<crate::DomTypeHolder> for SVGGeometryElement {
++    /// <https://svgwg.org/svg2-draft/types.html#__svg__SVGGeometryElement__getTotalLength>
++    ///
++    /// The path's length in user units, already renormalized by `pathLength`
++    /// where present — which is the whole point of that attribute, so
++    /// reporting the raw length would contradict what the dash pattern does.
++    ///
++    /// Returns 0 for elements with no geometry. With
++    /// `layout.svg.native.enabled` off, only direct children of the `<svg>`
++    /// resolve — see `getBBox`.
++    fn GetTotalLength(&self) -> Finite<f32> {
++        let node = self.upcast::<Node>();
++        let length = node
++            .owner_window()
++            .svg_geometry_query(node)
++            .map_or(0., |geometry| geometry.total_length);
++        Finite::wrap(if length.is_finite() { length } else { 0. })
++    }
++}
++
+ impl VirtualMethods for SVGGeometryElement {
+     fn super_type(&self) -> Option<&dyn VirtualMethods> {
+         Some(self.upcast::<SVGGraphicsElement>() as &dyn VirtualMethods)
+diff --git a/components/script/dom/svg/svggraphicselement.rs b/components/script/dom/svg/svggraphicselement.rs
+index e28fa8daf76..0eb16bfe833 100644
+--- a/components/script/dom/svg/svggraphicselement.rs
++++ b/components/script/dom/svg/svggraphicselement.rs
+@@ -9,6 +9,12 @@ use stylo_dom::ElementState;
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::document::Document;
+ use crate::dom::node::virtualmethods::VirtualMethods;
++use crate::dom::bindings::codegen::Bindings::SVGGraphicsElementBinding::{
++    SVGBoundingBoxOptions, SVGGraphicsElementMethods,
++};
++use crate::dom::bindings::root::DomRoot;
++use crate::dom::geometry::domrect::DOMRect;
++use crate::dom::node::{Node, NodeTraits};
+ use crate::dom::svg::svgelement::SVGElement;
+ 
+ #[dom_struct]
+@@ -42,6 +48,40 @@ impl SVGGraphicsElement {
+     }
+ }
+ 
++impl SVGGraphicsElementMethods<crate::DomTypeHolder> for SVGGraphicsElement {
++    /// <https://svgwg.org/svg2-draft/types.html#__svg__SVGGraphicsElement__getBBox>
++    ///
++    /// The *object* bounding box: the geometry's extent in this element's own
++    /// user space, before its own `transform`, and excluding stroke, markers
++    /// and clipping. The options argument selects between those variants and
++    /// is not honoured yet — only the default (fill-only) box is computed, so
++    /// a non-default request returns the same box rather than a wrong one.
++    ///
++    /// Returns an empty rect for elements with no geometry. With
++    /// `layout.svg.native.enabled` off, only direct children of the `<svg>`
++    /// resolve: `svg > * { display: none }` gives them computed styles but
++    /// prunes the traversal below them, so anything inside a `<g>` reports an
++    /// empty box rather than a wrong one.
++    fn GetBBox(
++        &self,
++        cx: &mut js::context::JSContext,
++        _options: &SVGBoundingBoxOptions,
++    ) -> DomRoot<DOMRect> {
++        let window = self.upcast::<Node>().owner_window();
++        let geometry = window
++            .svg_geometry_query(self.upcast::<Node>())
++            .unwrap_or_default();
++        DOMRect::new(
++            cx,
++            window.upcast(),
++            geometry.x as f64,
++            geometry.y as f64,
++            geometry.width as f64,
++            geometry.height as f64,
++        )
++    }
++}
++
+ impl VirtualMethods for SVGGraphicsElement {
+     fn super_type(&self) -> Option<&dyn VirtualMethods> {
+         Some(self.upcast::<SVGElement>() as &dyn VirtualMethods)
+diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
+index c62d4662888..c513fd7f80d 100644
+--- a/components/script/dom/window/window.rs
++++ b/components/script/dom/window/window.rs
+@@ -3041,6 +3041,15 @@ impl Window {
+             .query_client_rect(node.to_trusted_node_address())
+     }
+ 
++    /// The geometry of an SVG shape in its own user space, for `getBBox` and
++    /// `getTotalLength`.
++    pub(crate) fn svg_geometry_query(&self, node: &Node) -> Option<layout_api::SVGGeometry> {
++        self.layout_reflow(QueryMsg::SVGGeometryQuery);
++        self.layout
++            .borrow()
++            .query_svg_geometry(node.to_trusted_node_address())
++    }
++
+     pub(crate) fn current_css_zoom_query(&self, node: &Node) -> f32 {
+         self.layout_reflow(QueryMsg::CurrentCSSZoomQuery);
+         self.layout
+diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
+index 15b225d1937..8306d902192 100644
+--- a/components/script_bindings/codegen/Bindings.conf
++++ b/components/script_bindings/codegen/Bindings.conf
+@@ -1090,6 +1090,10 @@ DOMInterfaces = {
+     'cx': ['Supports', 'Supports_'],
+ },
+ 
++'SVGGraphicsElement': {
++    'cx': ['GetBBox'],
++},
++
+ 'SVGElement': {
+     'cx': ['Blur', 'Focus', 'Style'],
+ },
+diff --git a/components/script_bindings/webidls/SVGGeometryElement.webidl b/components/script_bindings/webidls/SVGGeometryElement.webidl
+index 75b53f476a5..b5a50b26330 100644
+--- a/components/script_bindings/webidls/SVGGeometryElement.webidl
++++ b/components/script_bindings/webidls/SVGGeometryElement.webidl
+@@ -9,6 +9,6 @@ interface SVGGeometryElement : SVGGraphicsElement {
+ 
+   //boolean isPointInFill(optional DOMPointInit point = {});
+   //boolean isPointInStroke(optional DOMPointInit point = {});
+-  //float getTotalLength();
++  float getTotalLength();
+   //DOMPoint getPointAtLength(float distance);
+ };
+diff --git a/components/script_bindings/webidls/SVGGraphicsElement.webidl b/components/script_bindings/webidls/SVGGraphicsElement.webidl
+index 3f43ef05047..c27cc4c10d3 100644
+--- a/components/script_bindings/webidls/SVGGraphicsElement.webidl
++++ b/components/script_bindings/webidls/SVGGraphicsElement.webidl
+@@ -3,18 +3,19 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ // https://svgwg.org/svg2-draft/types.html#InterfaceSVGGraphicsElement
+-//dictionary SVGBoundingBoxOptions {
+-//  boolean fill = true;
+-//  boolean stroke = false;
+-//  boolean markers = false;
+-//  boolean clipped = false;
+-//};
++dictionary SVGBoundingBoxOptions {
++  boolean fill = true;
++  boolean stroke = false;
++  boolean markers = false;
++  boolean clipped = false;
++};
+ 
+ [Exposed=Window, Abstract]
+ interface SVGGraphicsElement : SVGElement {
+   //[SameObject] readonly attribute SVGAnimatedTransformList transform;
+ 
+-  //DOMRect getBBox(optional SVGBoundingBoxOptions options);
++  [NewObject]
++  DOMRect getBBox(optional SVGBoundingBoxOptions options = {});
+   //DOMMatrix? getCTM();
+   //DOMMatrix? getScreenCTM();
+ };
+diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
+index 5cfe3303ec7..785df46d4ce 100644
+--- a/components/shared/layout/lib.rs
++++ b/components/shared/layout/lib.rs
+@@ -195,6 +195,18 @@ impl SVGElementData<'_> {
+     }
+ }
+ 
++/// An SVG shape's geometry, in the element's own user space — that is, before
++/// its own `transform`, which is what `getBBox` is defined to report.
++#[derive(Clone, Copy, Debug, Default)]
++pub struct SVGGeometry {
++    pub x: f32,
++    pub y: f32,
++    pub width: f32,
++    pub height: f32,
++    /// Total path length in user units, for `getTotalLength`.
++    pub total_length: f32,
++}
++
+ /// The address of a node known to be valid. These are sent from script to layout.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+ pub struct TrustedNodeAddress(pub *const c_void);
+@@ -405,6 +417,13 @@ pub trait Layout {
+     ) -> Option<usize>;
+     fn query_elements_from_point(&self, point: LayoutPoint) -> Vec<ElementsFromPointResult>;
+     fn query_effective_overflow(&self, node: TrustedNodeAddress) -> Option<AxesOverflow>;
++
++    /// The geometry of an SVG element, in its own user space: its own shape,
++    /// or for a container the union of its children. `None` when nothing in
++    /// the subtree resolves, which with `layout.svg.native.enabled` off is
++    /// everything below a direct child of the `<svg>` — `svg > *`'s
++    /// `display: none` prunes the style traversal there.
++    fn query_svg_geometry(&self, node: TrustedNodeAddress) -> Option<SVGGeometry>;
+     fn stylist_mut(&mut self) -> &mut Stylist;
+ 
+     /// Set whether the accessibility tree should be constructed for this Layout.
+@@ -540,6 +559,7 @@ pub enum ScrollContainerResponse {
+ #[derive(Debug, PartialEq)]
+ pub enum QueryMsg {
+     BoxArea,
++    SVGGeometryQuery,
+     BoxAreas,
+     ClientRectQuery,
+     CurrentCSSZoomQuery,

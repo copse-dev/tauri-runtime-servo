@@ -328,6 +328,20 @@ servo = { path = "../servo/components/servo" }
   growing 5px → 80px then erasing, instead of a static comb.
   Seam: **0 lines**.
 
+- **0016 — script: implement `getBBox` and `getTotalLength`.** Both were
+  commented out in the WebIDL, so calling either threw `TypeError`. Cheap
+  now that layout resolves SVG geometry into `kurbo` paths: a bounding box
+  and a perimeter are one call each, resolved on demand from computed
+  style. `getBBox` on a container unions its children's boxes through
+  each child's transform, and the `<svg>` element is its own viewport.
+  `getTotalLength` reports the length already renormalized by
+  `pathLength`. Not done: the options argument (stroke/markers/clipped) is
+  ignored, and with the pref off only direct children of the `<svg>`
+  resolve. Also fixes a **latent crash** shared with 0013's
+  `node_rendering_type` check — both walk DOM parents, and any walk that
+  finds no `<svg>` reaches the Document, where `type_id` panics.
+  *Validated:* `svg/` WPT +188 subtests, zero regressions.
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
