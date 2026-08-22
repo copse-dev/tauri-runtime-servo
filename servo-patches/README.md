@@ -369,6 +369,32 @@ servo = { path = "../servo/components/servo" }
   in Servo a gradient stop has no colour and every gradient comes out
   empty. Consumed by 0017.
 
+- **0018 — layout: render `<use>`.** Earlier in this series `<use>` was
+  recorded as blocked on an id lookup layout does not have. 0017 built
+  that lookup for paint servers, and this reuses it. Renders the
+  referenced element as a child of the `<use>`, wrapped in its transform
+  composed with `translate(x, y)`; `<symbol>` is walked directly.
+  Two deliberate departures: the referenced element keeps the style it has
+  where it is *defined*, so inheritance through the `<use>` (notably
+  `fill="currentColor"` on the `<use>`) does not reach it — that needs a
+  shadow tree Servo does not build; and a `viewBox` on `<symbol>` is
+  ignored. The walk is depth-limited and self-references are rejected,
+  because a `<use>` cycle would otherwise hang layout.
+  *Validated:* six cases within **0.022%** of the rasterization path;
+  `svg/` WPT **+212**, zero regressions, five `use`/`symbol` reftests
+  flipping to pass.
+
+- **0019 — script: `isPointInFill`, `isPointInStroke`, `getPointAtLength`.**
+  The rest of the cheap half of Phase 0, nearly free given the
+  hit-testing module and kurbo's `inv_arclen`. Point queries are in the
+  element's own user space; `isPointInStroke` ignores dashes; distances
+  clamp to the path's ends.
+  Note `pathLength` does **not** scale either length API — it calibrates
+  distance-along-path for rendering, not for the DOM, which
+  `SVGGeometryElement.getTotalLength-01.svg` pins down by asserting 200
+  for a 200-unit path declared as 1000.
+  *Validated:* `svg/` WPT **+287**, zero regressions.
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
