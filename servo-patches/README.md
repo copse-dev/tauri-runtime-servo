@@ -342,6 +342,33 @@ servo = { path = "../servo/components/servo" }
   finds no `<svg>` reaches the Document, where `type_id` panics.
   *Validated:* `svg/` WPT +188 subtests, zero regressions.
 
+- **0017 — layout: gradients and clip-path.** The two biggest remaining
+  holes, and the two that mattered to real content — gradients appear in
+  39 of the Copse app's own files and `clip-path` in 19. Gradients were a
+  *regression* against the rasterization path, which renders them;
+  `clip-path` was worse than missing, painting content unclipped.
+  Paint servers are collected in one scan of the `<svg>` subtree, since
+  layout has no document-wide id lookup (the same gap that stops `<use>`).
+  Covers linear and radial gradients, both unit systems,
+  `gradientTransform`, `spreadMethod`, focal points, gradients on strokes,
+  `href`/`xlink:href` stop inheritance with a cycle guard, percent-encoded
+  fragments, and `clipPath` in both unit systems on shapes and groups.
+  Needs **stylo-0003**: `stop-color`/`stop-opacity` are gecko-gated, so a
+  `<stop>` had no colour at all. Also maps `clip-path` as a presentation
+  attribute, without which `clip-path="url(#id)"` never reached the
+  cascade. `clip-rule` stays gecko-gated, so clips use the non-zero rule.
+  *Validated:* gradients within **0.024%** of pixels of the rasterization
+  path across six variants, clipping within **0.020%** across five, all
+  edge antialiasing; `svg/` WPT **+199 subtests, zero regressions**.
+  One correctness note worth carrying: an unresolvable `clip-path`
+  reference means *ignore the property*, not *hide the element* — SVG 1.1
+  said the opposite and it is easy to get backwards.
+
+- **stylo-0003 — ungate `stop-color` and `stop-opacity`
+  (stylo repo, out of series).** Both are `#[cfg(feature = "gecko")]`, so
+  in Servo a gradient stop has no colour and every gradient comes out
+  empty. Consumed by 0017.
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are

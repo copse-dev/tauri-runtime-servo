@@ -1,0 +1,42 @@
+Ungate stop-color and stop-opacity in stylo's Servo build.
+
+This targets the STYLO repository (https://github.com/servo/stylo), not
+servo -- it sits outside the numbered servo series, like stylo-0001 and
+stylo-0002.
+
+Both properties are behind #[cfg(feature = "gecko")], so in Servo a
+gradient stop has no colour and no opacity: neither the CSS form
+(<stop style="stop-color:blue">) nor the presentation attribute
+(<stop stop-color="blue">) parses, and every gradient comes out empty.
+There is no Gecko-specific machinery behind either -- stop-color is a
+plain Color and stop-opacity a plain Opacity -- so the gate looks like
+an artefact of Gecko having been the only consumer.
+
+Consumed by servo patch 0017, which reads them off the cascade so that
+stylesheet-driven and currentColor stops work rather than only literal
+attributes.
+
+To try it: check out stylo at the rev pinned in servo's Cargo.lock,
+apply, and add a [patch."https://github.com/servo/stylo"] section
+redirecting all eleven stylo-repo crates at the local checkout.
+
+diff --git a/style/properties/longhands.toml b/style/properties/longhands.toml
+index 27d96b253..0d55e5e32 100644
+--- a/style/properties/longhands.toml
++++ b/style/properties/longhands.toml
+@@ -1955,7 +1955,6 @@ affects = "layout"
+ type = "Color"
+ initial = "computed::Color::BLACK"
+ struct = "svg"
+-engine = "gecko"
+ spec = "https://svgwg.org/svg2-draft/pservers.html#StopColorProperties"
+ affects = "paint"
+ 
+@@ -1963,7 +1962,6 @@ affects = "paint"
+ type = "Opacity"
+ initial = "1.0"
+ struct = "svg"
+-engine = "gecko"
+ spec = "https://svgwg.org/svg2-draft/pservers.html#StopOpacityProperty"
+ affects = "paint"
+ 
