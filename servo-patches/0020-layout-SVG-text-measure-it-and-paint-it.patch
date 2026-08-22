@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 22:51:00 +0100
-Subject: [PATCH] =?UTF-8?q?layout:=20SVG=20text=20=E2=80=94=20measure=20it?=
- =?UTF-8?q?,=20and=20paint=20it?=
+Subject: [PATCH 20/21] =?UTF-8?q?layout:=20SVG=20text=20=E2=80=94=20measur?=
+ =?UTF-8?q?e=20it,=20and=20paint=20it?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit

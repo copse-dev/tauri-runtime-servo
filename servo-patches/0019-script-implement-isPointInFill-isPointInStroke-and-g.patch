@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 21:51:36 +0100
-Subject: [PATCH] script: implement isPointInFill, isPointInStroke and
+Subject: [PATCH 19/21] script: implement isPointInFill, isPointInStroke and
  getPointAtLength
 
 The rest of the cheap half of Phase 0. All three were commented out in
@@ -31,37 +31,16 @@ take a path native SVG never sees, and they errored before this too.
 getTotalLength-02.html needs width.baseVal.value -- SVGAnimatedLength,
 which is Phase 0's remaining half.
 ---
- components/layout/dom_traversal.rs            |   8 ++
  components/layout/layout_impl.rs              |  16 +++
  components/layout/svg/hittest.rs              | 101 ++++++++++++++++++
  components/layout/svg/integration.rs          |  62 +++++++++++
- components/script/animations.rs               |  16 +++
  .../script/dom/svg/svggeometryelement.rs      |  58 +++++++++-
  components/script/dom/window/window.rs        |  12 +++
  .../script_bindings/codegen/Bindings.conf     |   4 +
  .../webidls/SVGGeometryElement.webidl         |   7 +-
  components/shared/layout/lib.rs               |  23 ++++
- 10 files changed, 301 insertions(+), 6 deletions(-)
+ 8 files changed, 277 insertions(+), 6 deletions(-)
 
-diff --git a/components/layout/dom_traversal.rs b/components/layout/dom_traversal.rs
-index 7f30c7ceda6..23bdc266583 100644
---- a/components/layout/dom_traversal.rs
-+++ b/components/layout/dom_traversal.rs
-@@ -225,6 +225,14 @@ fn traverse_eager_pseudo_element<'dom>(
-         return;
-     }
- 
-+    if std::env::var_os("COPSE_SERVO_PSEUDO_DEBUG").is_some() {
-+        eprintln!(
-+            "[pseudo] {:?} display={:?} parent_display={:?}",
-+            pseudo_element_type,
-+            pseudo_element_info.style.get_box().display,
-+            node_info.style.get_box().display,
-+        );
-+    }
-     match Display::from(pseudo_element_info.style.get_box().display) {
-         Display::None => {},
-         Display::Contents => {
 diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
 index e5ed40bb512..812fe761955 100644
 --- a/components/layout/layout_impl.rs
@@ -278,46 +257,6 @@ index e4d2a55c724..413e1436c9e 100644
 +        },
 +    })
 +}
-diff --git a/components/script/animations.rs b/components/script/animations.rs
-index 6dee981ca15..edbeb6b05ef 100644
---- a/components/script/animations.rs
-+++ b/components/script/animations.rs
-@@ -79,7 +79,14 @@ impl Animations {
-     // specified `current_timeline_value`. Returns true if animations were marked
-     // dirty or false otherwise.
-     pub(crate) fn mark_animating_nodes_as_dirty(&self, current_timeline_value: f64) -> bool {
-+        let debug = std::env::var_os("COPSE_SERVO_ANIM_DEBUG").is_some();
-         if current_timeline_value <= self.timeline_value_at_last_dirty.get() {
-+            if debug {
-+                eprintln!(
-+                    "[anim] early-return: timeline {current_timeline_value} <= last {}",
-+                    self.timeline_value_at_last_dirty.get()
-+                );
-+            }
-             return false;
-         }
-         self.timeline_value_at_last_dirty
-@@ -87,11 +94,20 @@ impl Animations {
- 
-         let sets = self.sets.sets.read();
-         let rooted_nodes = self.rooted_nodes.borrow();
-+        let mut dirtied = 0usize;
-         for node in sets
-             .keys()
-             .filter_map(|key| rooted_nodes.get(&NoTrace(key.node)))
-         {
-             node.dirty(NodeDamage::Style);
-+            dirtied += 1;
-+        }
-+        if debug {
-+            eprintln!(
-+                "[anim] timeline {current_timeline_value} sets={} rooted={} dirtied={dirtied}",
-+                sets.len(),
-+                rooted_nodes.len()
-+            );
-         }
- 
-         true
 diff --git a/components/script/dom/svg/svggeometryelement.rs b/components/script/dom/svg/svggeometryelement.rs
 index a48ea02ba55..bd14aa5a39a 100644
 --- a/components/script/dom/svg/svggeometryelement.rs
