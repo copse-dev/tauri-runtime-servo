@@ -426,6 +426,36 @@ servo = { path = "../servo/components/servo" }
   gecko-gated; worth ungating as a group upstream rather than one at a
   time.
 
+- **0022 — layout: lay out and paint `<foreignObject>` content.** The
+  inverse hinge, open: HTML inside a natively rendered SVG goes through
+  real CSS layout and paints through the display list, above the SVG
+  image. Reuses the inner-widget seam `<video controls>` already has on
+  replaced boxes. Three defects stood between "fragments exist" and
+  "pixels appear": foreign content was only reached when the scene also
+  produced an image (fatal for Mermaid's measurement documents, which are
+  foreignObject-only); the replaced-content paint traversal dropped the
+  `PositioningFragment` wrapper in a catch-all; and unhoisted
+  `position:absolute` descendants left placeholder fragments that panic
+  the stacking-context builder — per SVG 2 they now resolve against the
+  foreignObject's own rectangle, which is both the fix and the spec.
+  Documented limitations: content paints *above* the SVG (three
+  paint-order/blending reftests fail honestly where they passed
+  vacuously), and rotation of the transform chain is not applied to
+  foreign content. *Validated:* inner divs render with correct text at
+  correct positions including through a translated `<g>`;
+  `getBoundingClientRect` reports real geometry; `svg/` WPT **+360**, no
+  crashes.
+
+- **0023 — script: add `SVGStyleElement`.** A `<style>` inside an `<svg>`
+  fell back to a bare `SVGElement` and its sheet never registered — which
+  is how Mermaid ships its entire theme, hence black shapes and invisible
+  strokes even once everything else worked. Trimmed from
+  `HTMLStyleElement`: parse, register, track mutations, honor `type`
+  (empty/`text/css` only — ignoring it regressed two WPT subtests
+  immediately), keep the inline CSP check. No CSSOM `sheet`, no `@import`.
+  **With 0022 + 0023, Mermaid renders**: themed nodes sized to their
+  labels, readable text, edges. Arrowheads still missing (`<marker>`).
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
