@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sat, 22 Aug 2026 20:44:00 +0100
-Subject: [PATCH] layout: gradients and clip-path
+Date: Sat, 22 Aug 2026 21:03:45 +0100
+Subject: [PATCH 17/17] layout: gradients and clip-path
 
 The two biggest remaining holes, and the two that mattered most to real
 content: gradients appear in 39 of the Copse app's own files and
@@ -57,9 +57,8 @@ regressed mid-way and prompted the href and percent-decoding work.
  components/layout/svg/resolve.rs        | 125 +++++++++--
  components/layout/svg/scene.rs          |  71 +++++-
  components/layout/svg/tree.rs           |  64 +++++-
- components/script/animations.rs         |  16 ++
  components/script/dom/svg/svgelement.rs |  27 +++
- 10 files changed, 932 insertions(+), 60 deletions(-)
+ 9 files changed, 916 insertions(+), 60 deletions(-)
  create mode 100644 components/layout/svg/pservers.rs
 
 diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
@@ -1431,46 +1430,6 @@ index efb2bef9afa..b8c40939fcc 100644
      };
      (shape.fill.is_some() || shape.stroke.is_some()).then_some(SVGNode::Shape(shape))
  }
-diff --git a/components/script/animations.rs b/components/script/animations.rs
-index 6dee981ca15..edbeb6b05ef 100644
---- a/components/script/animations.rs
-+++ b/components/script/animations.rs
-@@ -79,7 +79,14 @@ impl Animations {
-     // specified `current_timeline_value`. Returns true if animations were marked
-     // dirty or false otherwise.
-     pub(crate) fn mark_animating_nodes_as_dirty(&self, current_timeline_value: f64) -> bool {
-+        let debug = std::env::var_os("COPSE_SERVO_ANIM_DEBUG").is_some();
-         if current_timeline_value <= self.timeline_value_at_last_dirty.get() {
-+            if debug {
-+                eprintln!(
-+                    "[anim] early-return: timeline {current_timeline_value} <= last {}",
-+                    self.timeline_value_at_last_dirty.get()
-+                );
-+            }
-             return false;
-         }
-         self.timeline_value_at_last_dirty
-@@ -87,11 +94,20 @@ impl Animations {
- 
-         let sets = self.sets.sets.read();
-         let rooted_nodes = self.rooted_nodes.borrow();
-+        let mut dirtied = 0usize;
-         for node in sets
-             .keys()
-             .filter_map(|key| rooted_nodes.get(&NoTrace(key.node)))
-         {
-             node.dirty(NodeDamage::Style);
-+            dirtied += 1;
-+        }
-+        if debug {
-+            eprintln!(
-+                "[anim] timeline {current_timeline_value} sets={} rooted={} dirtied={dirtied}",
-+                sets.len(),
-+                rooted_nodes.len()
-+            );
-         }
- 
-         true
 diff --git a/components/script/dom/svg/svgelement.rs b/components/script/dom/svg/svgelement.rs
 index d5a02526b3f..d629680a14e 100644
 --- a/components/script/dom/svg/svgelement.rs
