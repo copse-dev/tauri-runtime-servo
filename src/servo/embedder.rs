@@ -704,6 +704,9 @@ impl Embedder {
     // trapezoid only because its container was never a grid, leaving the
     // ::before in a line box.
     preferences.layout_grid_enabled = true;
+    // Native SVG layout (servo-patches 0010-0014). Ships default-off upstream
+    // because it is incomplete; enabled here to evaluate it.
+    preferences.layout_svg_native_enabled = true;
     // The async Clipboard API (`navigator.clipboard`) is likewise implemented
     // behind a pref, and servo's default `clipboard` feature ships a system
     // clipboard delegate on desktop platforms — enabling it lights up copy
