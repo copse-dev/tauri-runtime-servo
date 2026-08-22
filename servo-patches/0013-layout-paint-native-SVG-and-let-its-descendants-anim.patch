@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 17:56:45 +0100
-Subject: [PATCH 13/14] layout: paint native SVG, and let its descendants
+Subject: [PATCH 13/17] layout: paint native SVG, and let its descendants
  animate
 
 Connects the renderer to the compositor and makes CSS animations run on

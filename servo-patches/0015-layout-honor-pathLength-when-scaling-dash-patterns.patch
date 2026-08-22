@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 19:16:02 +0100
-Subject: [PATCH] layout: honor pathLength when scaling dash patterns
+Subject: [PATCH 15/17] layout: honor pathLength when scaling dash patterns
 
 pathLength renormalizes every distance-along-path computation so the
 path is treated as being that long. It is what makes the standard "draw

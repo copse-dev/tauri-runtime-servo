@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 16:12:53 +0100
-Subject: [PATCH 10/14] layout: SVG geometry traversal and vello painting
+Subject: [PATCH 10/17] layout: SVG geometry traversal and vello painting
 
 Builds on the viewport from the previous patch: walks the <svg> subtree,
 resolves each element's geometry and paint from its computed style, and
@@ -54,11 +54,11 @@ Seam: 1 added line in a pre-existing file (the vello_cpu dependency).
  components/layout/svg/paint.rs     | 231 +++++++++++++++
  components/layout/svg/render.rs    | 342 ++++++++++++++++++++++
  components/layout/svg/resolve.rs   | 334 ++++++++++++++++++++++
- components/layout/svg/scene.rs     |  60 ++++
+ components/layout/svg/scene.rs     |  59 ++++
  components/layout/svg/transform.rs | 140 +++++++++
  components/layout/svg/tree.rs      | 182 ++++++++++++
  components/layout/svg/viewbox.rs   | 106 +------
- 11 files changed, 1853 insertions(+), 104 deletions(-)
+ 11 files changed, 1852 insertions(+), 104 deletions(-)
  create mode 100644 components/layout/svg/geometry.rs
  create mode 100644 components/layout/svg/number.rs
  create mode 100644 components/layout/svg/paint.rs
@@ -1591,10 +1591,10 @@ index 00000000000..194f2a5a671
 +}
 diff --git a/components/layout/svg/scene.rs b/components/layout/svg/scene.rs
 new file mode 100644
-index 00000000000..2ef2a45f721
+index 00000000000..bd7ef4a6934
 --- /dev/null
 +++ b/components/layout/svg/scene.rs
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,59 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -1654,7 +1654,6 @@ index 00000000000..2ef2a45f721
 +        group_is_empty(&self.root)
 +    }
 +}
-+
 diff --git a/components/layout/svg/transform.rs b/components/layout/svg/transform.rs
 new file mode 100644
 index 00000000000..18d2c56a557

@@ -1,30 +1,20 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
-Date: Sat, 22 Aug 2026 16:23:53 +0100
-Subject: [PATCH 12/14] layout: SVG image registry, and why it is not wired up
+Date: Sat, 22 Aug 2026 21:12:31 +0100
+Subject: [PATCH 12/17] layout: SVG image registry
 
-Adds the piece that would hand natively painted SVG pixels to the
-compositor -- per-node ImageKey caching keyed on a content hash of the
-scene, so an unchanged SVG costs nothing on reflow and an animating one
-costs one upload per changed frame -- and stops there, because wiring it
-in does not compile for a reason worth recording rather than working
-around.
+Per-node ImageKey caching for natively painted SVG, keyed on a content
+hash of the scene, so an unchanged SVG costs nothing on reflow and an
+animating one costs exactly one upload per changed frame. The next patch
+connects it to fragment construction.
 
-CrossProcessPaintApi holds Cells and is therefore !Sync. LayoutContext
-must be Sync, because layout runs in parallel. Putting the paint API
-where fragment construction can reach it fails with "Cell<u32> cannot be
-shared between threads safely" at every parallel-layout call site
-(traversal.rs, flexbox/layout.rs, flow/construct.rs, flow/mod.rs, ...).
-So an image key cannot be minted or uploaded from the code that first
-knows the used size, and therefore the pixmap size.
-
-Rendering in parallel is fine -- render() is pure. Only registration has
-to happen on the layout thread. The module documents three ways out and
-recommends queueing (node, pixmap) the way pending_rasterization_images
-already queues work, draining on the layout thread between tree building
-and display-list construction. That is a fragment-tree design change
-whose frame-timing consequences cannot be judged without measuring, so
-it is left as a decision rather than guessed at.
+The split between allocation, rendering and upload is forced by
+CrossProcessPaintApi holding Cells and therefore being !Sync while
+LayoutContext must be Sync, because layout runs in parallel. Rendering
+is pure and can happen on any layout thread; only the upload has to
+reach the paint API, and so has to happen on the layout thread. The
+module documents that constraint, since it is the reason the code is
+shaped this way and not something a reader would otherwise guess.
 
 Also moves the viewport transform out of tree building and into
 painting. It depends on the element's used content-box size, which is
@@ -35,9 +25,9 @@ resize repaints without rebuilding the tree.
  components/layout/svg/mod.rs    |   1 +
  components/layout/svg/paint.rs  |  10 +-
  components/layout/svg/render.rs |  30 +++---
- components/layout/svg/scene.rs  |  90 +++++++++++++++-
+ components/layout/svg/scene.rs  |  91 +++++++++++++++-
  components/layout/svg/tree.rs   |  45 +++-----
- 6 files changed, 300 insertions(+), 53 deletions(-)
+ 6 files changed, 301 insertions(+), 53 deletions(-)
  create mode 100644 components/layout/svg/image.rs
 
 diff --git a/components/layout/svg/image.rs b/components/layout/svg/image.rs
@@ -390,7 +380,7 @@ index 17574562c15..8382b12667c 100644
          assert_eq!(pixel(&pixmap, 1, 4).3, 255);
          assert_eq!(pixel(&pixmap, 5, 4).3, 0);
 diff --git a/components/layout/svg/scene.rs b/components/layout/svg/scene.rs
-index 2ef2a45f721..f813a282926 100644
+index bd7ef4a6934..f813a282926 100644
 --- a/components/layout/svg/scene.rs
 +++ b/components/layout/svg/scene.rs
 @@ -9,7 +9,9 @@
@@ -404,10 +394,11 @@ index 2ef2a45f721..f813a282926 100644
  
  use super::paint::{FillRule, Rgba, Stroke};
  
-@@ -58,3 +60,89 @@ impl SVGTree {
+@@ -57,3 +59,90 @@ impl SVGTree {
+         group_is_empty(&self.root)
      }
  }
- 
++
 +
 +/// A content hash of the whole scene.
 +///
