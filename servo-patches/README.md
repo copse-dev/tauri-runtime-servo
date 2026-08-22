@@ -395,6 +395,37 @@ servo = { path = "../servo/components/servo" }
   for a 200-unit path declared as 1000.
   *Validated:* `svg/` WPT **+287**, zero regressions.
 
+- **0020 — layout: SVG text, measured and painted.** Servo's SVG element
+  hierarchy had no text types, so `<text>` never received
+  `SVGGraphicsElement` and `getBBox` was not a function on it — which is
+  exactly where Mermaid died, silently, because `suppressErrors` hid the
+  throw. Adds `SVGTextContentElement`, `SVGTextPositioningElement`,
+  `SVGTextElement` and `SVGTSpanElement`, with **real** measurement
+  behind them: the text is shaped with the cascade's font through the
+  same `FontContext`/`Font::shape_text` as HTML text, so `getBBox` and
+  `getComputedTextLength` return real numbers. It also paints, via
+  `vello_cpu`'s `glyph_run`.
+  Returning zeros would have been worse than throwing — a caller that
+  believes them stacks every node on one point and draws a broken diagram
+  instead of failing honestly.
+  Needs **stylo-0004** for `text-anchor`. Scope is one shaped run per
+  `<text>`: no `textPath`, no per-glyph position lists, no bidi; a
+  `<tspan>` contributes text to the enclosing run rather than positioning
+  itself.
+  *Validated:* `svg/` WPT **+332**, with three moving the other way —
+  one flaky (fails pref-off standalone too) and two previously passing
+  only because neither side rendered text. `text-transform` is genuinely
+  fixed by reusing layout's own `TextTransformationIterator`.
+  **Mermaid still does not render**: it now dies on `getBBox` on a
+  `<foreignObject>`, in both `htmlLabels` modes. That is the inverse
+  hinge the plan defers.
+
+- **stylo-0004 — ungate `text-anchor` and `dominant-baseline`
+  (stylo repo, out of series).** Without `text-anchor` every centred SVG
+  label draws left-aligned. The fourth pair of SVG properties found
+  gecko-gated; worth ungating as a group upstream rather than one at a
+  time.
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are

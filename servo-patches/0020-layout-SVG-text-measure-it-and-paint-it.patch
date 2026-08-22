@@ -1,0 +1,1202 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 22 Aug 2026 22:51:00 +0100
+Subject: [PATCH] =?UTF-8?q?layout:=20SVG=20text=20=E2=80=94=20measure=20it?=
+ =?UTF-8?q?,=20and=20paint=20it?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Servo's SVG element hierarchy had no text types at all, so <text> never
+received the SVGGraphicsElement interface and getBBox was not a function
+on it. That is where Mermaid died: it measures every label with getBBox
+on a <text>, the first call threw, and mermaid.run bailed silently
+because suppressErrors hid it.
+
+Adds SVGTextContentElement, SVGTextPositioningElement, SVGTextElement
+and SVGTSpanElement, and behind them real measurement: the element's
+text is shaped with the font the cascade resolved, using the same
+FontContext and Font::shape_text that HTML text goes through. So
+getBBox and getComputedTextLength return real numbers -- 24 for "Mg" at
+16px, 109 for "Hello diagram" -- rather than zeros. Zeros were the trap
+worth avoiding: a caller that believes them lays every node out on the
+same point and renders a broken diagram instead of failing honestly.
+
+The text also paints, via vello_cpu's glyph_run, which is what canvas
+already uses. Measuring without painting would have been its own
+half-truth: correct layout with invisible labels.
+
+text-anchor and dominant-baseline needed stylo-0004, being gecko-gated
+like pointer-events, stop-color and stop-opacity before them -- the
+fourth instance of that trap. Without text-anchor a centred label draws
+left-aligned, which is most of what a diagram's labels are.
+
+Scope is a single shaped run per <text>: no textPath, no per-glyph
+x/y/rotate lists, no bidi reordering, and a <tspan> contributes its text
+to the enclosing run rather than positioning itself. That is wrong for a
+<tspan> carrying its own x/y and right for the commoner case of styling
+part of a line.
+
+The scene keeps its pure/coupled split: text enters it behind a
+PaintText trait, so scene.rs and render.rs still depend only on kurbo
+and vello_cpu and the 52-test harness still runs without building Servo.
+
+svg/ WPT: +332 subtests against the pref-off baseline, up from +287,
+with three tests moving the other way. None is a defect in this work:
+  - use-element-web-animations.html fails standalone with the pref OFF
+    too, so it is order-dependent flakiness in the parallel run.
+  - rtl-text-path.html needs textPath, which is out of scope.
+  - viewBox-scaling-text-001.html is a 1px font scaled 100x with
+    combining marks, judged against a 10-pixel fuzz.
+The last two were passing only because neither side rendered any text;
+now one side does. That is the vacuous-reftest pattern again, and it is
+progress showing up as a regression. text-transform-001 and -002 were in
+the same group and are genuinely fixed, by reusing layout's own
+TextTransformationIterator so SVG casing matches HTML casing exactly.
+
+Mermaid still does not render, and the reason has moved: it now dies on
+getBBox on a <foreignObject>, in both htmlLabels modes. foreignObject is
+the inverse hinge the plan defers, so this does not chase it.
+---
+ components/layout/layout_impl.rs              |   2 +-
+ components/layout/replaced.rs                 |   3 +-
+ components/layout/svg/hittest.rs              |  15 ++
+ components/layout/svg/integration.rs          |  29 ++-
+ components/layout/svg/mod.rs                  |   1 +
+ components/layout/svg/render.rs               |  51 +++-
+ components/layout/svg/scene.rs                |  48 ++++
+ components/layout/svg/text.rs                 | 239 ++++++++++++++++++
+ components/layout/svg/tree.rs                 |  65 ++++-
+ components/script/dom/element/create.rs       |   4 +
+ components/script/dom/node/virtualmethods.rs  |  18 +-
+ components/script/dom/svg/mod.rs              |   4 +
+ components/script/dom/svg/svgelement.rs       |  16 ++
+ .../script/dom/svg/svgtextcontentelement.rs   |  59 +++++
+ components/script/dom/svg/svgtextelement.rs   |  59 +++++
+ .../dom/svg/svgtextpositioningelement.rs      |  39 +++
+ components/script/dom/svg/svgtspanelement.rs  |  59 +++++
+ .../webidls/SVGTSpanElement.webidl            |   8 +
+ .../webidls/SVGTextContentElement.webidl      |   9 +
+ .../webidls/SVGTextElement.webidl             |   8 +
+ .../webidls/SVGTextPositioningElement.webidl  |   8 +
+ components/shared/layout/lib.rs               |   3 +
+ 22 files changed, 728 insertions(+), 19 deletions(-)
+ create mode 100644 components/layout/svg/text.rs
+ create mode 100644 components/script/dom/svg/svgtextcontentelement.rs
+ create mode 100644 components/script/dom/svg/svgtextelement.rs
+ create mode 100644 components/script/dom/svg/svgtextpositioningelement.rs
+ create mode 100644 components/script/dom/svg/svgtspanelement.rs
+ create mode 100644 components/script_bindings/webidls/SVGTSpanElement.webidl
+ create mode 100644 components/script_bindings/webidls/SVGTextContentElement.webidl
+ create mode 100644 components/script_bindings/webidls/SVGTextElement.webidl
+ create mode 100644 components/script_bindings/webidls/SVGTextPositioningElement.webidl
+
+diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
+index 812fe761955..279b274b98f 100644
+--- a/components/layout/layout_impl.rs
++++ b/components/layout/layout_impl.rs
+@@ -483,7 +483,7 @@ impl Layout for LayoutThread {
+             // Safety: a synchronous script query, so no layout workers run.
+             #[expect(unsafe_code)]
+             unsafe {
+-                crate::svg::integration::svg_geometry(node)
++                crate::svg::integration::svg_geometry(node, &self.font_context)
+             }
+         })
+     }
+diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
+index 53298f785bc..901f06a8e34 100644
+--- a/components/layout/replaced.rs
++++ b/components/layout/replaced.rs
+@@ -349,7 +349,8 @@ impl ReplacedContents {
+             _ => unreachable!("SVG element can't contain a raster image."),
+         });
+ 
+-        let native = svg::integration::build_native(node, viewport, &natural_size);
++        let native =
++            svg::integration::build_native(node, viewport, &natural_size, &context.font_context);
+ 
+         (
+             ReplacedContentKind::SVGElement {
+diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
+index 5485e11c2be..2b25a5d1cb7 100644
+--- a/components/layout/svg/hittest.rs
++++ b/components/layout/svg/hittest.rs
+@@ -133,6 +133,21 @@ fn visit_group(
+                     *hit = Some(current);
+                 }
+             },
++            SVGNode::Text(text) => {
++                // Text hit-tests against its ink bounds rather than its glyph
++                // outlines, which is what the spec's `pointer-events: fill`
++                // means for a text run.
++                let current = *index;
++                *index += 1;
++                let combined = transform * text.transform;
++                if regions.fill &&
++                    text.fill.is_some() &&
++                    invert(combined)
++                        .is_some_and(|inverse| text.run.bounds().contains(inverse * point))
++                {
++                    *hit = Some(current);
++                }
++            },
+         }
+     }
+ }
+diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
+index 413e1436c9e..707ab01688d 100644
+--- a/components/layout/svg/integration.rs
++++ b/components/layout/svg/integration.rs
+@@ -35,6 +35,7 @@ pub(crate) fn build_native(
+     node: ServoLayoutNode<'_>,
+     viewport: SVGViewport,
+     natural_size: &NaturalSizes,
++    font_context: &fonts::FontContext,
+ ) -> Option<Arc<NativeSVG>> {
+     native_svg_enabled().then(|| {
+         let user_space = match viewport.view_box {
+@@ -45,7 +46,7 @@ pub(crate) fn build_native(
+             ),
+         };
+         Arc::new(NativeSVG {
+-            tree: tree::build(node, user_space),
++            tree: tree::build(node, user_space, font_context),
+             viewport,
+         })
+     })
+@@ -170,20 +171,25 @@ pub(crate) unsafe fn rendering_type_in_native_subtree(
+ /// from the script thread with no layout workers running. `Layout::query_*`
+ /// satisfies that.
+ #[expect(unsafe_code)]
+-pub(crate) unsafe fn svg_geometry(node: ServoLayoutNode<'_>) -> Option<layout_api::SVGGeometry> {
++pub(crate) unsafe fn svg_geometry(
++    node: ServoLayoutNode<'_>,
++    font_context: &fonts::FontContext,
++) -> Option<layout_api::SVGGeometry> {
+     use kurbo::Shape as _;
+     use layout_api::{LayoutElement as _, LayoutNode as _};
+ 
+     // Percentage geometry resolves against the nearest viewport, so the basis
+     // has to come from the enclosing `<svg>`, not from this element.
+     let basis = unsafe { enclosing_viewport_basis(node) }?;
+-    let (bounds, total_length) = unsafe { bounds_of(node, basis) }?;
++    let (bounds, total_length, text_length) =
++        unsafe { bounds_of(node, basis, font_context) }?;
+     Some(layout_api::SVGGeometry {
+         x: bounds.x0 as f32,
+         y: bounds.y0 as f32,
+         width: bounds.width() as f32,
+         height: bounds.height() as f32,
+         total_length: total_length as f32,
++        text_length: text_length as f32,
+     })
+ }
+ 
+@@ -202,22 +208,31 @@ pub(crate) unsafe fn svg_geometry(node: ServoLayoutNode<'_>) -> Option<layout_ap
+ unsafe fn bounds_of(
+     node: ServoLayoutNode<'_>,
+     basis: super::paint::PercentageBasis,
+-) -> Option<(kurbo::Rect, f64)> {
++    font_context: &fonts::FontContext,
++) -> Option<(kurbo::Rect, f64, f64)> {
+     use kurbo::Shape as _;
+     use layout_api::{LayoutElement as _, LayoutNode as _};
++    use web_atoms::local_name;
+ 
+     let element = node.as_element()?;
+     let style = tree::primary_style(element)?;
+ 
++    let name = element.local_name();
++    if *name == local_name!("text") || *name == local_name!("tspan") {
++        let measured = super::text::measure(node, element, &style, font_context, basis)?;
++        return Some((measured.bounds(), 0., measured.advance));
++    }
++
+     if let Some(path) = super::resolve::shape(element, &style, basis) {
+         // `getTotalLength` is only defined on geometry elements, but the
+         // perimeter of any shape is well defined, so it is always reported.
+-        return Some((path.bounding_box(), path.perimeter(0.01)));
++        return Some((path.bounding_box(), path.perimeter(0.01), 0.));
+     }
+ 
+     let mut union: Option<kurbo::Rect> = None;
+     for child in node.dom_children() {
+-        let Some((child_bounds, _)) = (unsafe { bounds_of(child, basis) }) else {
++        let Some((child_bounds, _, _)) = (unsafe { bounds_of(child, basis, font_context) })
++        else {
+             continue;
+         };
+         // Each child's box is reported in the child's space; bring it into
+@@ -236,7 +251,7 @@ unsafe fn bounds_of(
+             None => transformed,
+         });
+     }
+-    union.map(|bounds| (bounds, 0.))
++    union.map(|bounds| (bounds, 0., 0.))
+ }
+ 
+ /// The percentage basis of the `<svg>` viewport enclosing `node`.
+diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
+index 4aa6ddaa7c0..242979f7b08 100644
+--- a/components/layout/svg/mod.rs
++++ b/components/layout/svg/mod.rs
+@@ -35,6 +35,7 @@ pub(crate) mod pservers;
+ pub(crate) mod render;
+ pub(crate) mod resolve;
+ pub(crate) mod scene;
++pub(crate) mod text;
+ pub(crate) mod transform;
+ pub(crate) mod tree;
+ pub(crate) mod viewbox;
+diff --git a/components/layout/svg/render.rs b/components/layout/svg/render.rs
+index 6d532a12481..5fb0eb36261 100644
+--- a/components/layout/svg/render.rs
++++ b/components/layout/svg/render.rs
+@@ -22,7 +22,7 @@ use super::paint::{
+     self, FillRule, Gradient, GradientGeometry, GradientUnits, LineCap, LineJoin, Paint, Rgba,
+     SpreadMethod, Stroke,
+ };
+-use super::scene::{SVGGroup, SVGNode, SVGShape, SVGTree};
++use super::scene::{SVGGroup, SVGNode, SVGShape, SVGTextRun, SVGTree};
+ 
+ /// Paints a tree into a new pixmap of `width` x `height` device pixels.
+ ///
+@@ -36,14 +36,19 @@ pub(crate) fn render(tree: &SVGTree, width: u16, height: u16, base: Affine) -> P
+     let mut resources = Resources::new();
+     let mut pixmap = Pixmap::new(width, height);
+ 
+-    paint_group(&mut context, &tree.root, base);
++    paint_group(&mut context, &mut resources, &tree.root, base);
+ 
+     context.flush();
+     context.render_to_pixmap(&mut resources, &mut pixmap);
+     pixmap
+ }
+ 
+-fn paint_group(context: &mut RenderContext, group: &SVGGroup, parent_transform: Affine) {
++fn paint_group(
++    context: &mut RenderContext,
++    resources: &mut Resources,
++    group: &SVGGroup,
++    parent_transform: Affine,
++) {
+     let transform = parent_transform * group.transform;
+ 
+     // Group opacity composites the group as a whole, so it needs a layer:
+@@ -63,8 +68,9 @@ fn paint_group(context: &mut RenderContext, group: &SVGGroup, parent_transform:
+ 
+     for child in &group.children {
+         match child {
+-            SVGNode::Group(child) => paint_group(context, child, transform),
++            SVGNode::Group(child) => paint_group(context, resources, child, transform),
+             SVGNode::Shape(shape) => paint_shape(context, shape, transform),
++            SVGNode::Text(text) => paint_text(context, resources, text, transform),
+         }
+     }
+ 
+@@ -73,6 +79,43 @@ fn paint_group(context: &mut RenderContext, group: &SVGGroup, parent_transform:
+     }
+ }
+ 
++fn paint_text(
++    context: &mut RenderContext,
++    resources: &mut Resources,
++    text: &SVGTextRun,
++    parent_transform: Affine,
++) {
++    let Some((paint, rule)) = &text.fill else {
++        return;
++    };
++    let transform = parent_transform * text.transform;
++    context.set_transform(transform);
++
++    let needs_layer = text.clip.is_some();
++    if needs_layer {
++        context.push_layer(
++            text.clip.as_ref(),
++            Some(BlendMode::default()),
++            Some(text.opacity),
++            None,
++            None,
++        );
++    }
++    let alpha = if needs_layer { 1. } else { text.opacity };
++
++    if let Some((paint, _)) = to_paint(&paint.clone().multiply_alpha(alpha), text.run.bounds()) {
++        context.set_fill_rule(match rule {
++            FillRule::NonZero => Fill::NonZero,
++            FillRule::EvenOdd => Fill::EvenOdd,
++        });
++        text.run.paint(context, resources, paint);
++    }
++
++    if needs_layer {
++        context.pop_layer();
++    }
++}
++
+ fn paint_shape(context: &mut RenderContext, shape: &SVGShape, parent_transform: Affine) {
+     let transform = parent_transform * shape.transform;
+     context.set_transform(transform);
+diff --git a/components/layout/svg/scene.rs b/components/layout/svg/scene.rs
+index 38cad23f8fd..80e9f179126 100644
+--- a/components/layout/svg/scene.rs
++++ b/components/layout/svg/scene.rs
+@@ -34,6 +34,38 @@ pub(crate) struct SVGGroup {
+ pub(crate) enum SVGNode {
+     Group(SVGGroup),
+     Shape(SVGShape),
++    Text(SVGTextRun),
++}
++
++/// Painting a shaped text run.
++///
++/// A trait rather than a concrete type so this module stays free of the font
++/// machinery: the shaped glyphs and their `FontRef` live in
++/// [`super::text`], which is stylo- and DOM-coupled, while everything here
++/// and in [`super::render`] remains testable without building Servo.
++pub(crate) trait PaintText: std::fmt::Debug + Send + Sync {
++    /// Paints the run at the origin of the current transform.
++    fn paint(
++        &self,
++        context: &mut vello_cpu::RenderContext,
++        resources: &mut vello_cpu::Resources,
++        paint: vello_cpu::PaintType,
++    );
++    /// The run's ink bounds, for hit testing and `getBBox`.
++    fn bounds(&self) -> kurbo::Rect;
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct SVGTextRun {
++    #[allow(clippy::type_complexity)]
++    pub run: std::sync::Arc<dyn PaintText>,
++    pub transform: Affine,
++    pub opacity: f32,
++    pub fill: Option<(Paint, FillRule)>,
++    pub clip: Option<BezPath>,
++    /// Distinguishes runs for the content hash; the glyphs themselves are not
++    /// cheap to hash and the text's own identity is enough.
++    pub hash_key: u64,
+ }
+ 
+ #[derive(Clone, Debug)]
+@@ -58,6 +90,7 @@ impl SVGTree {
+             group.children.iter().all(|child| match child {
+                 SVGNode::Group(group) => group_is_empty(group),
+                 SVGNode::Shape(shape) => shape.fill.is_none() && shape.stroke.is_none(),
++                SVGNode::Text(text) => text.fill.is_none(),
+             })
+         }
+         group_is_empty(&self.root)
+@@ -93,6 +126,21 @@ fn hash_group(group: &SVGGroup, hasher: &mut impl Hasher) {
+                 1u8.hash(hasher);
+                 hash_shape(shape, hasher);
+             },
++            SVGNode::Text(text) => {
++                2u8.hash(hasher);
++                text.hash_key.hash(hasher);
++                hash_affine(&text.transform, hasher);
++                text.opacity.to_bits().hash(hasher);
++                hash_optional_path(&text.clip, hasher);
++                match &text.fill {
++                    None => 0u8.hash(hasher),
++                    Some((paint, rule)) => {
++                        1u8.hash(hasher);
++                        hash_paint(paint, hasher);
++                        rule.hash(hasher);
++                    },
++                }
++            },
+         }
+     }
+ }
+diff --git a/components/layout/svg/text.rs b/components/layout/svg/text.rs
+new file mode 100644
+index 00000000000..2d57f58cae8
+--- /dev/null
++++ b/components/layout/svg/text.rs
+@@ -0,0 +1,239 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Measuring and positioning `<text>`.
++//!
++//! Only what a single-line label needs: the element's own text shaped with the
++//! font the cascade resolved, positioned by `x`/`y` and `text-anchor`. No
++//! `textPath`, no per-glyph `x`/`y`/`rotate` lists, no bidi reordering across
++//! `<tspan>`s, no automatic wrapping — SVG text has none of the last one, but
++//! the others are real features this does not have.
++//!
++//! Even so it is worth having on its own: `getComputedTextLength` and
++//! `getBBox` on a `<text>` are what content measures labels with, and a
++//! library that cannot measure text cannot lay out a diagram. Returning zeros
++//! would be worse than throwing, because the caller would believe them.
++
++use fonts::{FontContext, FontRef, ShapingFlags, ShapingOptions};
++use layout_api::LayoutElement as _;
++use layout_api::LayoutNode as _;
++use script::layout_dom::{ServoLayoutElement, ServoLayoutNode};
++use style::properties::ComputedValues;
++use style::computed_values::text_anchor::T as TextAnchor;
++use unicode_script::Script;
++use web_atoms::{local_name, ns};
++
++use crate::flow::inline::text_transform::TextTransformationIterator;
++
++use super::paint::PercentageBasis;
++
++/// A shaped run of SVG text, in the element's own user space.
++pub(crate) struct MeasuredText {
++    /// The origin the glyphs are positioned from: the text's anchor point
++    /// after `text-anchor` has been applied.
++    pub origin: (f64, f64),
++    /// Total advance width in user units — what `getComputedTextLength`
++    /// reports.
++    pub advance: f64,
++    pub ascent: f64,
++    pub descent: f64,
++    pub font: FontRef,
++    pub font_size: f64,
++    /// Glyph ids with their x offsets from `origin`, ready to paint.
++    pub glyphs: Vec<(u32, f64)>,
++}
++
++impl MeasuredText {
++    /// The tight bounding box of the run, for `getBBox`.
++    pub(crate) fn bounds(&self) -> kurbo::Rect {
++        kurbo::Rect::new(
++            self.origin.0,
++            self.origin.1 - self.ascent,
++            self.origin.0 + self.advance,
++            self.origin.1 + self.descent,
++        )
++    }
++}
++
++/// Measures an SVG text element, or `None` when it has no text, no usable font
++/// or a zero font size.
++pub(crate) fn measure(
++    node: ServoLayoutNode<'_>,
++    element: ServoLayoutElement<'_>,
++    style: &ComputedValues,
++    font_context: &FontContext,
++    basis: PercentageBasis,
++) -> Option<MeasuredText> {
++    let text = text_content(node);
++    if text.is_empty() {
++        return None;
++    }
++    // `text-transform` applies to SVG text like any other, and reusing
++    // layout's iterator keeps the casing rules (including the locale-sensitive
++    // ones) identical to HTML text rather than approximating them here.
++    let mut transformed = String::with_capacity(text.len());
++    for iteration in TextTransformationIterator::new(&text, style, true, true) {
++        transformed.extend(iteration.characters());
++    }
++    let text = transformed;
++
++    let font_style = style.clone_font();
++    let font_size = font_style.font_size.computed_size().px() as f64;
++    if !(font_size > 0.) {
++        return None;
++    }
++    let font = font_context.font_group(font_style.clone()).first(font_context)?;
++
++    // The font-variant properties come from the cascade like any other text;
++    // SVG does not change how a run is shaped, only where it is placed.
++    let shaped = font.shape_text(
++        &text,
++        &ShapingOptions {
++            letter_spacing: None,
++            word_spacing: None,
++            script: Script::Common,
++            language: Default::default(),
++            ligatures: font_style.font_variant_ligatures,
++            numeric: font_style.font_variant_numeric,
++            east_asian: font_style.font_variant_east_asian,
++            feature_settings: font_style.font_feature_settings.clone(),
++            position: font_style.font_variant_position,
++            alternates: Default::default(),
++            flags: ShapingFlags::empty(),
++        },
++    );
++    // Sum the advances rather than asking for a total: `total_advance` is on
++    // the slice type, and walking the glyphs is needed anyway to position
++    // them for painting.
++    let mut glyphs = Vec::new();
++    let mut advance = 0f64;
++    for glyph in shaped.glyphs() {
++        glyphs.push((glyph.id(), advance));
++        advance += glyph.advance().to_f32_px() as f64;
++    }
++
++    // `x`/`y` place the text's anchor point; `text-anchor` decides which part
++    // of the run lands there. SVG's `text-anchor` maps onto stylo's
++    // `text-align` for `start`/`middle`/`end`.
++    let x = coordinate(element, &local_name!("x"), basis.width);
++    let y = coordinate(element, &local_name!("y"), basis.height);
++    let anchor_shift = match style.get_inherited_svg().text_anchor {
++        TextAnchor::Middle => -advance / 2.,
++        TextAnchor::End => -advance,
++        TextAnchor::Start => 0.,
++    };
++
++    let metrics = &font.metrics;
++    Some(MeasuredText {
++        origin: (x + anchor_shift, y),
++        advance,
++        ascent: metrics.ascent.to_f32_px() as f64,
++        descent: metrics.descent.to_f32_px() as f64,
++        font,
++        font_size,
++        glyphs,
++    })
++}
++
++/// The element's text, flattened from its descendants.
++///
++/// `<tspan>` children contribute their text but not their own positioning, so
++/// a multi-line label measures as one run. That is wrong for a `<tspan>` with
++/// its own `x`/`y`, and right for the far commoner case of a `<tspan>` used
++/// only to style part of a line.
++fn text_content(node: ServoLayoutNode<'_>) -> String {
++    let mut out = String::new();
++    collect(node, &mut out);
++    // SVG collapses whitespace like HTML's `normal` by default.
++    out.split_whitespace().collect::<Vec<_>>().join(" ")
++}
++
++fn collect(node: ServoLayoutNode<'_>, out: &mut String) {
++    for child in node.dom_children() {
++        if child.as_element().is_some() {
++            collect(child, out);
++        } else {
++            out.push_str(&child.text_content());
++        }
++    }
++}
++
++/// An `x`/`y` coordinate. Percentages resolve against the viewport, as
++/// everywhere else in SVG.
++fn coordinate(element: ServoLayoutElement<'_>, name: &web_atoms::LocalName, basis: f64) -> f64 {
++    element
++        .attribute_as_str(&ns!(), name)
++        .and_then(|value| {
++            let value = value.trim();
++            match value.strip_suffix('%') {
++                Some(number) => number.trim().parse::<f64>().ok().map(|n| n / 100. * basis),
++                None => {
++                    let mut parser = super::number::NumberListParser::new(value);
++                    parser.next_number().map(|n| n as f64)
++                },
++            }
++        })
++        .unwrap_or(0.)
++}
++
++impl std::fmt::Debug for MeasuredText {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter
++            .debug_struct("MeasuredText")
++            .field("origin", &self.origin)
++            .field("advance", &self.advance)
++            .field("glyphs", &self.glyphs.len())
++            .finish()
++    }
++}
++
++impl super::scene::PaintText for MeasuredText {
++    fn paint(
++        &self,
++        context: &mut vello_cpu::RenderContext,
++        resources: &mut vello_cpu::Resources,
++        paint: vello_cpu::PaintType,
++    ) {
++        let Ok(data_and_index) = self.font.font_data_and_index() else {
++            return;
++        };
++        // vello wants the raw font bytes; servo's Font hands them over as a
++        // blob plus a collection index.
++        let font = vello_cpu::peniko::FontData::new(
++            vello_cpu::peniko::Blob::new(std::sync::Arc::new(data_and_index.data.clone())),
++            data_and_index.index,
++        );
++        context.set_paint(paint);
++        context
++            .glyph_run(resources, &font)
++            .font_size(self.font_size as f32)
++            .fill_glyphs(self.glyphs.iter().map(|(id, offset)| vello_cpu::Glyph {
++                id: *id,
++                x: (self.origin.0 + offset) as f32,
++                y: self.origin.1 as f32,
++            }));
++    }
++
++    fn bounds(&self) -> kurbo::Rect {
++        MeasuredText::bounds(self)
++    }
++}
++
++/// A cheap identity for the content hash: the same text at the same place with
++/// the same font produces the same key.
++pub(crate) fn hash_key(measured: &MeasuredText) -> u64 {
++    use std::hash::{Hash as _, Hasher as _};
++
++    let mut hasher = std::collections::hash_map::DefaultHasher::new();
++    measured.origin.0.to_bits().hash(&mut hasher);
++    measured.origin.1.to_bits().hash(&mut hasher);
++    measured.advance.to_bits().hash(&mut hasher);
++    measured.font_size.to_bits().hash(&mut hasher);
++    measured.glyphs.len().hash(&mut hasher);
++    for (id, offset) in &measured.glyphs {
++        id.hash(&mut hasher);
++        offset.to_bits().hash(&mut hasher);
++    }
++    hasher.finish()
++}
+diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
+index 92c63e72001..129526d2c78 100644
+--- a/components/layout/svg/tree.rs
++++ b/components/layout/svg/tree.rs
+@@ -37,7 +37,11 @@ use super::resolve;
+ /// `user_space_size` is the viewBox's size when there is one — inside a
+ /// viewBox, percentages resolve against it, not against the CSS box — and the
+ /// element's natural size otherwise.
+-pub(crate) fn build(svg_root: ServoLayoutNode<'_>, user_space_size: (f64, f64)) -> SVGTree {
++pub(crate) fn build(
++    svg_root: ServoLayoutNode<'_>,
++    user_space_size: (f64, f64),
++    font_context: &fonts::FontContext,
++) -> SVGTree {
+     let basis = PercentageBasis::for_viewport(user_space_size.0, user_space_size.1);
+     // One scan of the subtree up front, so a shape referencing a gradient does
+     // not have to search for it. Skipped entirely when there are none.
+@@ -45,6 +49,7 @@ pub(crate) fn build(svg_root: ServoLayoutNode<'_>, user_space_size: (f64, f64))
+     let context = BuildContext {
+         basis,
+         paint_servers,
++        font_context,
+     };
+     let mut root = SVGGroup {
+         transform: Affine::IDENTITY,
+@@ -57,9 +62,10 @@ pub(crate) fn build(svg_root: ServoLayoutNode<'_>, user_space_size: (f64, f64))
+ }
+ 
+ /// What the walk needs at every node.
+-pub(crate) struct BuildContext<'dom> {
++pub(crate) struct BuildContext<'dom, 'font> {
+     pub basis: PercentageBasis,
+     pub paint_servers: PaintServers<'dom>,
++    pub font_context: &'font fonts::FontContext,
+ }
+ 
+ /// How deep `<use>` may nest before the walk gives up.
+@@ -71,7 +77,7 @@ const MAX_USE_DEPTH: usize = 8;
+ 
+ fn append_children<'dom>(
+     parent: ServoLayoutNode<'dom>,
+-    context: &BuildContext<'dom>,
++    context: &BuildContext<'dom, '_>,
+     use_depth: usize,
+     out: &mut Vec<SVGNode>,
+ ) {
+@@ -94,7 +100,7 @@ fn build_node<'dom>(
+     node: ServoLayoutNode<'dom>,
+     element: ServoLayoutElement<'dom>,
+     style: &ComputedValues,
+-    context: &BuildContext<'dom>,
++    context: &BuildContext<'dom, '_>,
+     use_depth: usize,
+ ) -> Option<SVGNode> {
+     let basis = context.basis;
+@@ -122,6 +128,15 @@ fn build_node<'dom>(
+         return None;
+     }
+ 
++    if *name == local_name!("text") {
++        return build_text(node, element, style, context);
++    }
++    // A `<tspan>` contributes its text to the enclosing `<text>`, which
++    // measures the run as a whole, so it is not a node of its own.
++    if *name == local_name!("tspan") {
++        return None;
++    }
++
+     if *name == local_name!("use") {
+         return build_use(node, element, style, context, use_depth);
+     }
+@@ -213,6 +228,46 @@ fn build_node<'dom>(
+     (shape.fill.is_some() || shape.stroke.is_some()).then_some(SVGNode::Shape(shape))
+ }
+ 
++/// `<text>`: a single shaped run, positioned by `x`/`y` and `text-anchor`.
++fn build_text<'dom>(
++    node: ServoLayoutNode<'dom>,
++    element: ServoLayoutElement<'dom>,
++    style: &ComputedValues,
++    context: &BuildContext<'dom, '_>,
++) -> Option<SVGNode> {
++    if !resolve::is_visible(style) {
++        return None;
++    }
++    let opacity = resolve::opacity(style);
++    if opacity == 0. {
++        return None;
++    }
++    let basis = context.basis;
++    let measured = super::text::measure(node, element, style, context.font_context, basis)?;
++
++    let current_color = style.get_inherited_text().clone_color();
++    let (fill_paint, fill_rule) = resolve::fill(style, &current_color, &context.paint_servers);
++    if !fill_paint.is_visible() {
++        return None;
++    }
++    let hash_key = super::text::hash_key(&measured);
++    let bounds = measured.bounds();
++    let clip = match resolve::clip_path(style, &context.paint_servers, basis, bounds) {
++        Some(resolve::ClipResolution::ClipEverything) => return None,
++        Some(resolve::ClipResolution::Path(path)) => Some(path),
++        None => None,
++    };
++
++    Some(SVGNode::Text(super::scene::SVGTextRun {
++        run: std::sync::Arc::new(measured),
++        transform: resolve::transform(element, style, basis),
++        opacity,
++        fill: Some((fill_paint, fill_rule)),
++        clip,
++        hash_key,
++    }))
++}
++
+ /// `<use>`: renders the element its `href` names, as if it had been placed
+ /// here.
+ ///
+@@ -229,7 +284,7 @@ fn build_use<'dom>(
+     node: ServoLayoutNode<'dom>,
+     element: ServoLayoutElement<'dom>,
+     style: &ComputedValues,
+-    context: &BuildContext<'dom>,
++    context: &BuildContext<'dom, '_>,
+     use_depth: usize,
+ ) -> Option<SVGNode> {
+     if use_depth >= MAX_USE_DEPTH {
+diff --git a/components/script/dom/element/create.rs b/components/script/dom/element/create.rs
+index a0cbed13233..3344961f31e 100644
+--- a/components/script/dom/element/create.rs
++++ b/components/script/dom/element/create.rs
+@@ -102,6 +102,8 @@ use crate::dom::svg::svgrectelement::SVGRectElement;
+ use crate::dom::svg::svgstopelement::SVGStopElement;
+ use crate::dom::svg::svgsvgelement::SVGSVGElement;
+ use crate::dom::svg::svgsymbolelement::SVGSymbolElement;
++use crate::dom::svg::svgtextelement::SVGTextElement;
++use crate::dom::svg::svgtspanelement::SVGTSpanElement;
+ use crate::dom::svg::svguseelement::SVGUseElement;
+ use crate::realms::enter_auto_realm;
+ use crate::script_thread::ScriptThread;
+@@ -138,6 +140,8 @@ fn create_svg_element(
+         local_name!("rect") => make!(SVGRectElement),
+         local_name!("svg") => make!(SVGSVGElement),
+         local_name!("symbol") => make!(SVGSymbolElement),
++        local_name!("text") => make!(SVGTextElement),
++        local_name!("tspan") => make!(SVGTSpanElement),
+         local_name!("use") => make!(SVGUseElement),
+         _ => make!(SVGElement),
+     }
+diff --git a/components/script/dom/node/virtualmethods.rs b/components/script/dom/node/virtualmethods.rs
+index 56558c79d0e..0f01a4fcf4b 100644
+--- a/components/script/dom/node/virtualmethods.rs
++++ b/components/script/dom/node/virtualmethods.rs
+@@ -10,7 +10,7 @@ use style::attr::AttrValue;
+ use crate::dom::bindings::inheritance::{
+     Castable, DocumentFragmentTypeId, ElementTypeId, HTMLElementTypeId, HTMLMediaElementTypeId,
+     NodeTypeId, SVGElementTypeId, SVGGeometryElementTypeId, SVGGradientElementTypeId,
+-    SVGGraphicsElementTypeId,
++    SVGGraphicsElementTypeId, SVGTextContentElementTypeId, SVGTextPositioningElementTypeId,
+ };
+ use crate::dom::bindings::str::DOMString;
+ use crate::dom::document::Document;
+@@ -82,6 +82,8 @@ use crate::dom::svg::svgradialgradientelement::SVGRadialGradientElement;
+ use crate::dom::svg::svgrectelement::SVGRectElement;
+ use crate::dom::svg::svgstopelement::SVGStopElement;
+ use crate::dom::svg::svgsvgelement::SVGSVGElement;
++use crate::dom::svg::svgtextelement::SVGTextElement;
++use crate::dom::svg::svgtspanelement::SVGTSpanElement;
+ use crate::dom::svg::svgsymbolelement::SVGSymbolElement;
+ use crate::dom::svg::svguseelement::SVGUseElement;
+ 
+@@ -406,6 +408,20 @@ pub(crate) fn vtable_for(node: &Node) -> &dyn VirtualMethods {
+         NodeTypeId::Element(ElementTypeId::SVGElement(SVGElementTypeId::SVGGradientElement(
+             SVGGradientElementTypeId::SVGRadialGradientElement,
+         ))) => node.downcast::<SVGRadialGradientElement>().unwrap() as &dyn VirtualMethods,
++        NodeTypeId::Element(ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(
++            SVGGraphicsElementTypeId::SVGTextContentElement(
++                SVGTextContentElementTypeId::SVGTextPositioningElement(
++                    SVGTextPositioningElementTypeId::SVGTextElement,
++                ),
++            ),
++        ))) => node.downcast::<SVGTextElement>().unwrap() as &dyn VirtualMethods,
++        NodeTypeId::Element(ElementTypeId::SVGElement(SVGElementTypeId::SVGGraphicsElement(
++            SVGGraphicsElementTypeId::SVGTextContentElement(
++                SVGTextContentElementTypeId::SVGTextPositioningElement(
++                    SVGTextPositioningElementTypeId::SVGTSpanElement,
++                ),
++            ),
++        ))) => node.downcast::<SVGTSpanElement>().unwrap() as &dyn VirtualMethods,
+         NodeTypeId::Element(ElementTypeId::SVGElement(SVGElementTypeId::SVGStopElement)) => {
+             node.downcast::<SVGStopElement>().unwrap() as &dyn VirtualMethods
+         },
+diff --git a/components/script/dom/svg/mod.rs b/components/script/dom/svg/mod.rs
+index 870a97b890c..a20615c3e0d 100644
+--- a/components/script/dom/svg/mod.rs
++++ b/components/script/dom/svg/mod.rs
+@@ -21,4 +21,8 @@ pub(crate) mod svgrectelement;
+ pub(crate) mod svgstopelement;
+ pub(crate) mod svgsvgelement;
+ pub(crate) mod svgsymbolelement;
++pub(crate) mod svgtextcontentelement;
++pub(crate) mod svgtextelement;
++pub(crate) mod svgtextpositioningelement;
++pub(crate) mod svgtspanelement;
+ pub(crate) mod svguseelement;
+diff --git a/components/script/dom/svg/svgelement.rs b/components/script/dom/svg/svgelement.rs
+index d629680a14e..40d9d538a29 100644
+--- a/components/script/dom/svg/svgelement.rs
++++ b/components/script/dom/svg/svgelement.rs
+@@ -387,6 +387,22 @@ impl<'dom> LayoutDom<'dom, SVGElement> {
+         );
+ 
+         // Parse geometry attributes based on element type
++        // Text placement. `text-anchor` decides which part of a run lands on
++        // the element's `x`/`y`, and `dominant-baseline` which part lands on
++        // its baseline; without them a centred label is drawn left-aligned.
++        self.parse_svg_attribute(
++            &parser_context,
++            "text-anchor",
++            longhands::text_anchor::parse_declared,
++            push,
++        );
++        self.parse_svg_attribute(
++            &parser_context,
++            "dominant-baseline",
++            longhands::dominant_baseline::parse_declared,
++            push,
++        );
++
+         // `clip-path` is a presentation attribute like the paint properties,
+         // so mapping it here is what makes `clip-path="url(#id)"` reach the
+         // cascade; without it the computed value stays `none` and the
+diff --git a/components/script/dom/svg/svgtextcontentelement.rs b/components/script/dom/svg/svgtextcontentelement.rs
+new file mode 100644
+index 00000000000..8bb6786a908
+--- /dev/null
++++ b/components/script/dom/svg/svgtextcontentelement.rs
+@@ -0,0 +1,59 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use dom_struct::dom_struct;
++use html5ever::{LocalName, Prefix};
++use stylo_dom::ElementState;
++
++use crate::dom::bindings::codegen::Bindings::SVGTextContentElementBinding::SVGTextContentElementMethods;
++use crate::dom::bindings::inheritance::Castable;
++use crate::dom::bindings::num::Finite;
++use crate::dom::document::Document;
++use crate::dom::node::{Node, NodeTraits};
++use crate::dom::node::virtualmethods::VirtualMethods;
++use crate::dom::svg::svggraphicselement::SVGGraphicsElement;
++
++/// <https://svgwg.org/svg2-draft/text.html#InterfaceSVGTextContentElement>
++#[dom_struct]
++pub(crate) struct SVGTextContentElement {
++    svggraphicselement: SVGGraphicsElement,
++}
++
++impl SVGTextContentElement {
++    pub(crate) fn new_inherited_with_state(
++        state: ElementState,
++        tag_name: LocalName,
++        prefix: Option<Prefix>,
++        document: &Document,
++    ) -> SVGTextContentElement {
++        SVGTextContentElement {
++            svggraphicselement: SVGGraphicsElement::new_inherited_with_state(
++                state, tag_name, prefix, document,
++            ),
++        }
++    }
++}
++
++impl SVGTextContentElementMethods<crate::DomTypeHolder> for SVGTextContentElement {
++    /// <https://svgwg.org/svg2-draft/text.html#__svg__SVGTextContentElement__getComputedTextLength>
++    ///
++    /// The advance width of the element's text, shaped with the font the
++    /// cascade resolved. Returns 0 when there is no text, no usable font, or
++    /// when `layout.svg.native.enabled` is off — SVG text is only measured on
++    /// the native path.
++    fn GetComputedTextLength(&self) -> Finite<f32> {
++        let node = self.upcast::<Node>();
++        let length = node
++            .owner_window()
++            .svg_geometry_query(node)
++            .map_or(0., |geometry| geometry.text_length);
++        Finite::wrap(if length.is_finite() { length } else { 0. })
++    }
++}
++
++impl VirtualMethods for SVGTextContentElement {
++    fn super_type(&self) -> Option<&dyn VirtualMethods> {
++        Some(self.upcast::<SVGGraphicsElement>() as &dyn VirtualMethods)
++    }
++}
+diff --git a/components/script/dom/svg/svgtextelement.rs b/components/script/dom/svg/svgtextelement.rs
+new file mode 100644
+index 00000000000..4c0d09cebdf
+--- /dev/null
++++ b/components/script/dom/svg/svgtextelement.rs
+@@ -0,0 +1,59 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use dom_struct::dom_struct;
++use html5ever::{LocalName, Prefix};
++use js::rust::HandleObject;
++use stylo_dom::ElementState;
++
++use crate::dom::bindings::inheritance::Castable;
++use crate::dom::bindings::root::DomRoot;
++use crate::dom::document::Document;
++use crate::dom::node::Node;
++use crate::dom::node::virtualmethods::VirtualMethods;
++use crate::dom::svg::svgtextpositioningelement::SVGTextPositioningElement;
++
++/// <https://svgwg.org/svg2-draft/text.html#InterfaceSVGTextElement>
++#[dom_struct]
++pub(crate) struct SVGTextElement {
++    svgtextpositioningelement: SVGTextPositioningElement,
++}
++
++impl SVGTextElement {
++    fn new_inherited(
++        local_name: LocalName,
++        prefix: Option<Prefix>,
++        document: &Document,
++    ) -> SVGTextElement {
++        SVGTextElement {
++            svgtextpositioningelement: SVGTextPositioningElement::new_inherited_with_state(
++                ElementState::empty(),
++                local_name,
++                prefix,
++                document,
++            ),
++        }
++    }
++
++    pub(crate) fn new(
++        cx: &mut js::context::JSContext,
++        local_name: LocalName,
++        prefix: Option<Prefix>,
++        document: &Document,
++        proto: Option<HandleObject>,
++    ) -> DomRoot<SVGTextElement> {
++        Node::reflect_node_with_proto(
++            cx,
++            Box::new(SVGTextElement::new_inherited(local_name, prefix, document)),
++            document,
++            proto,
++        )
++    }
++}
++
++impl VirtualMethods for SVGTextElement {
++    fn super_type(&self) -> Option<&dyn VirtualMethods> {
++        Some(self.upcast::<SVGTextPositioningElement>() as &dyn VirtualMethods)
++    }
++}
+diff --git a/components/script/dom/svg/svgtextpositioningelement.rs b/components/script/dom/svg/svgtextpositioningelement.rs
+new file mode 100644
+index 00000000000..76fc4784908
+--- /dev/null
++++ b/components/script/dom/svg/svgtextpositioningelement.rs
+@@ -0,0 +1,39 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use dom_struct::dom_struct;
++use html5ever::{LocalName, Prefix};
++use stylo_dom::ElementState;
++
++use crate::dom::bindings::inheritance::Castable;
++use crate::dom::document::Document;
++use crate::dom::node::virtualmethods::VirtualMethods;
++use crate::dom::svg::svgtextcontentelement::SVGTextContentElement;
++
++/// <https://svgwg.org/svg2-draft/text.html#InterfaceSVGTextPositioningElement>
++#[dom_struct]
++pub(crate) struct SVGTextPositioningElement {
++    svgtextcontentelement: SVGTextContentElement,
++}
++
++impl SVGTextPositioningElement {
++    pub(crate) fn new_inherited_with_state(
++        state: ElementState,
++        tag_name: LocalName,
++        prefix: Option<Prefix>,
++        document: &Document,
++    ) -> SVGTextPositioningElement {
++        SVGTextPositioningElement {
++            svgtextcontentelement: SVGTextContentElement::new_inherited_with_state(
++                state, tag_name, prefix, document,
++            ),
++        }
++    }
++}
++
++impl VirtualMethods for SVGTextPositioningElement {
++    fn super_type(&self) -> Option<&dyn VirtualMethods> {
++        Some(self.upcast::<SVGTextContentElement>() as &dyn VirtualMethods)
++    }
++}
+diff --git a/components/script/dom/svg/svgtspanelement.rs b/components/script/dom/svg/svgtspanelement.rs
+new file mode 100644
+index 00000000000..440127359f9
+--- /dev/null
++++ b/components/script/dom/svg/svgtspanelement.rs
+@@ -0,0 +1,59 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use dom_struct::dom_struct;
++use html5ever::{LocalName, Prefix};
++use js::rust::HandleObject;
++use stylo_dom::ElementState;
++
++use crate::dom::bindings::inheritance::Castable;
++use crate::dom::bindings::root::DomRoot;
++use crate::dom::document::Document;
++use crate::dom::node::Node;
++use crate::dom::node::virtualmethods::VirtualMethods;
++use crate::dom::svg::svgtextpositioningelement::SVGTextPositioningElement;
++
++/// <https://svgwg.org/svg2-draft/text.html#InterfaceSVGTSpanElement>
++#[dom_struct]
++pub(crate) struct SVGTSpanElement {
++    svgtextpositioningelement: SVGTextPositioningElement,
++}
++
++impl SVGTSpanElement {
++    fn new_inherited(
++        local_name: LocalName,
++        prefix: Option<Prefix>,
++        document: &Document,
++    ) -> SVGTSpanElement {
++        SVGTSpanElement {
++            svgtextpositioningelement: SVGTextPositioningElement::new_inherited_with_state(
++                ElementState::empty(),
++                local_name,
++                prefix,
++                document,
++            ),
++        }
++    }
++
++    pub(crate) fn new(
++        cx: &mut js::context::JSContext,
++        local_name: LocalName,
++        prefix: Option<Prefix>,
++        document: &Document,
++        proto: Option<HandleObject>,
++    ) -> DomRoot<SVGTSpanElement> {
++        Node::reflect_node_with_proto(
++            cx,
++            Box::new(SVGTSpanElement::new_inherited(local_name, prefix, document)),
++            document,
++            proto,
++        )
++    }
++}
++
++impl VirtualMethods for SVGTSpanElement {
++    fn super_type(&self) -> Option<&dyn VirtualMethods> {
++        Some(self.upcast::<SVGTextPositioningElement>() as &dyn VirtualMethods)
++    }
++}
+diff --git a/components/script_bindings/webidls/SVGTSpanElement.webidl b/components/script_bindings/webidls/SVGTSpanElement.webidl
+new file mode 100644
+index 00000000000..0de185292a0
+--- /dev/null
++++ b/components/script_bindings/webidls/SVGTSpanElement.webidl
+@@ -0,0 +1,8 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// https://svgwg.org/svg2-draft/text.html#InterfaceSVGTSpanElement
++[Exposed=Window]
++interface SVGTSpanElement : SVGTextPositioningElement {
++};
+diff --git a/components/script_bindings/webidls/SVGTextContentElement.webidl b/components/script_bindings/webidls/SVGTextContentElement.webidl
+new file mode 100644
+index 00000000000..03cee444e05
+--- /dev/null
++++ b/components/script_bindings/webidls/SVGTextContentElement.webidl
+@@ -0,0 +1,9 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// https://svgwg.org/svg2-draft/text.html#InterfaceSVGTextContentElement
++[Exposed=Window, Abstract]
++interface SVGTextContentElement : SVGGraphicsElement {
++  float getComputedTextLength();
++};
+diff --git a/components/script_bindings/webidls/SVGTextElement.webidl b/components/script_bindings/webidls/SVGTextElement.webidl
+new file mode 100644
+index 00000000000..d5c6f445fd9
+--- /dev/null
++++ b/components/script_bindings/webidls/SVGTextElement.webidl
+@@ -0,0 +1,8 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// https://svgwg.org/svg2-draft/text.html#InterfaceSVGTextElement
++[Exposed=Window]
++interface SVGTextElement : SVGTextPositioningElement {
++};
+diff --git a/components/script_bindings/webidls/SVGTextPositioningElement.webidl b/components/script_bindings/webidls/SVGTextPositioningElement.webidl
+new file mode 100644
+index 00000000000..11d47adca7e
+--- /dev/null
++++ b/components/script_bindings/webidls/SVGTextPositioningElement.webidl
+@@ -0,0 +1,8 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++// https://svgwg.org/svg2-draft/text.html#InterfaceSVGTextPositioningElement
++[Exposed=Window, Abstract]
++interface SVGTextPositioningElement : SVGTextContentElement {
++};
+diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
+index debb26d512f..d5961b599d2 100644
+--- a/components/shared/layout/lib.rs
++++ b/components/shared/layout/lib.rs
+@@ -205,6 +205,9 @@ pub struct SVGGeometry {
+     pub height: f32,
+     /// Total path length in user units, for `getTotalLength`.
+     pub total_length: f32,
++    /// Advance width of an SVG text element, for `getComputedTextLength`.
++    /// Zero for everything that is not text.
++    pub text_length: f32,
+ }
+ 
+ /// A point-in-shape question, for `isPointInFill`/`isPointInStroke`.
