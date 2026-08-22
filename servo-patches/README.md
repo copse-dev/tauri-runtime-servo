@@ -242,6 +242,60 @@ servo = { path = "../servo/components/servo" }
   3-way-applies with a single conflict, a one-line insertion into the
   sorted `EXPERIMENTAL_PREFS` list.
 
+- **0010 — layout: SVG geometry traversal and vello painting.** Walks the
+  `<svg>` subtree, resolves each element's geometry and paint from its
+  computed style, and paints with `vello_cpu` — the backend
+  `components/canvas` already uses, so no rasterizer and no tessellation.
+  Most geometry arrives through the cascade: Servo already maps `x`, `y`,
+  `cx`, `cy`, `r`, `rx`, `ry`, `width`, `height` and `d` onto real CSS
+  longhands, and stylo's `SVGPathData::normalize(true)` reduces path data
+  to absolute M/L/C/A/Z. The exceptions are `<line>`/`<polyline>`/
+  `<polygon>` (whose coordinates are not CSS properties in SVG 2) and the
+  `transform` attribute, which Servo does not map — and could not
+  usefully, since SVG's transform-list grammar is unitless and its
+  `rotate()` takes an origin CSS has no equivalent for. Both are parsed
+  here. *Validated:* 37 unit tests, 9 of them rendering real pixels,
+  including that group `opacity` composites as a unit rather than folding
+  into each child. Not implemented, each skipped rather than
+  approximated: `<use>` (Servo's `SVGUseElement` is a bare stub with no
+  shadow instancing), paint servers, clip, mask, marker, nested viewports.
+  Seam: **1 added line** (the `vello_cpu` dependency).
+
+- **0011 — layout: SVG hit testing against outlines, not bounding boxes.**
+  Fill regions honour `fill-rule`, stroke regions are the stroke outline
+  (so a `<line>`, which encloses no area, is still hittable), topmost in
+  paint order wins, and a non-invertible transform collapses to no hit.
+  **The `pointer-events` keyword set is not implemented and cannot be
+  without a stylo change:** SVG 2's `visiblePainted`, `visibleFill`,
+  `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
+  every one of them behind `#[cfg(feature = "gecko")]` in stylo's
+  `PointerEvents`, leaving Servo with `auto` and `none`. Ungating them is
+  the same shape of change as `stylo-0001`. *Validated:* 8 tests, chosen
+  as the cases where bounding-box testing gives the wrong answer.
+  Seam: **0 lines**.
+
+- **0012 — layout: SVG image registry, and why it is not wired up.**
+  Per-node `ImageKey` caching keyed on a content hash of the scene, so an
+  unchanged SVG costs nothing on reflow and an animating one costs one
+  upload per changed frame. **Deliberately not connected**, and this is
+  the architectural finding of the whole exercise:
+  `CrossProcessPaintApi` holds `Cell`s and is `!Sync`, while
+  `LayoutContext` must be `Sync` because layout runs in parallel. Putting
+  the paint API where fragment construction can reach it fails to compile
+  at every parallel-layout call site. So an image key cannot be minted or
+  uploaded from the code that first knows the used size. Rendering in
+  parallel is fine — `render` is pure — only registration must happen on
+  the layout thread. The module documents three ways out and recommends
+  queueing `(node, pixmap)` the way `pending_rasterization_images`
+  already queues work. Left as a decision rather than guessed at: it
+  changes the fragment tree, and its frame-timing cost cannot be judged
+  without measuring. **Consequence: with the pref on, native SVG paints
+  nothing yet.** Seam: **0 lines**.
+
+  *Known nit:* 0010 creates `svg/scene.rs` with a blank line at EOF that
+  0012 removes, so `git am` warns and per-commit tidy would fail on the
+  intermediate state. Fix when rebasing for submission.
+
 - **csp-0001 — match `'self'` for custom-scheme origins
   (rust-content-security-policy repo, out of series).** The `'self'`
   fast path compares the protected resource's origin against

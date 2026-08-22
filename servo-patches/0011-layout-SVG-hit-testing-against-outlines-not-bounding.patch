@@ -1,0 +1,395 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 22 Aug 2026 16:16:35 +0100
+Subject: [PATCH 11/12] layout: SVG hit testing against outlines, not bounding
+ boxes
+
+Point-in-shape testing for the native path: fill regions honour
+fill-rule, stroke regions are the stroke outline (so a <line>, which
+encloses no area, is still hittable), and the topmost shape in paint
+order wins. A non-invertible transform collapses to no hit rather than
+to a degenerate outline. Dashes are deliberately ignored when building
+the hit region -- a dashed stroke is hit along its whole length, not
+only on the dashes.
+
+The pointer-events keyword set is NOT implemented, and cannot be
+without a stylo change: SVG 2 defines visiblePainted, visibleFill,
+visibleStroke, visible, painted, fill, stroke and all, and every one of
+them is behind #[cfg(feature = "gecko")] in stylo's PointerEvents enum.
+Servo is left with auto and none, so the region rules here are
+implemented and tested but nothing can select between them from CSS
+yet. Ungating them is the same shape of one-line stylo change as
+stylo-0001 in this series.
+
+8 tests, covering the cases where bounding-box testing would give the
+wrong answer.
+---
+ components/layout/svg/hittest.rs | 346 +++++++++++++++++++++++++++++++
+ components/layout/svg/mod.rs     |   1 +
+ 2 files changed, 347 insertions(+)
+ create mode 100644 components/layout/svg/hittest.rs
+
+diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
+new file mode 100644
+index 00000000000..7e9900e6654
+--- /dev/null
++++ b/components/layout/svg/hittest.rs
+@@ -0,0 +1,346 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Hit testing against a painted SVG scene.
++//!
++//! SVG hit testing is not bounding-box testing: a point inside a shape's box
++//! but outside its outline misses, a point on a stroke hits even where the
++//! fill does not reach, and `fill-rule` decides what "inside" means for a
++//! self-overlapping path. All of that is geometry, so like [`super::render`]
++//! this is pure and pixel-free.
++//!
++//! What is *not* here is the `pointer-events` keyword set. SVG 2 defines
++//! `visiblePainted`, `visibleFill`, `visibleStroke`, `visible`, `painted`,
++//! `fill`, `stroke` and `all`, and Servo supports none of them: every one is
++//! behind `#[cfg(feature = "gecko")]` in stylo's `PointerEvents`, leaving
++//! Servo with only `auto` and `none`. So the region rules below are
++//! implemented and tested, but nothing can currently select between them from
++//! CSS. See `stylo-0002` in the patch series.
++//!
++//! <https://svgwg.org/svg2-draft/interact.html#PointerEventsProperty>
++
++use kurbo::{Affine, BezPath, Cap, Join, Point, Shape as _, Stroke as KurboStroke, StrokeOpts};
++
++use super::paint::{FillRule, LineCap, LineJoin, Stroke};
++use super::scene::{SVGGroup, SVGNode, SVGShape, SVGTree};
++
++/// Which regions of a shape respond to pointer events.
++#[derive(Clone, Copy, Debug, Default, PartialEq)]
++pub(crate) struct HitRegions {
++    pub fill: bool,
++    pub stroke: bool,
++}
++
++impl HitRegions {
++    /// `pointer-events: auto` on SVG content behaves as `visiblePainted`:
++    /// only regions that are actually painted are hit.
++    pub(crate) const PAINTED: Self = Self {
++        fill: true,
++        stroke: true,
++    };
++    pub(crate) const NONE: Self = Self {
++        fill: false,
++        stroke: false,
++    };
++}
++
++/// The topmost shape in `tree` under `point`, which is in the same space the
++/// tree was built in (the SVG viewport's coordinate system, CSS pixels).
++///
++/// Returns the shape's index in paint order, counting depth-first, so callers
++/// can map back to a DOM node using the same traversal the builder used.
++pub(crate) fn hit_test(tree: &SVGTree, point: Point, regions: HitRegions) -> Option<usize> {
++    let mut index = 0;
++    let mut hit = None;
++    visit_group(&tree.root, Affine::IDENTITY, point, regions, &mut index, &mut hit);
++    hit
++}
++
++fn visit_group(
++    group: &SVGGroup,
++    parent_transform: Affine,
++    point: Point,
++    regions: HitRegions,
++    index: &mut usize,
++    hit: &mut Option<usize>,
++) {
++    let transform = parent_transform * group.transform;
++    // Walk in paint order and keep overwriting: the last shape to claim the
++    // point is the topmost one, which is what a hit test should return.
++    for child in &group.children {
++        match child {
++            SVGNode::Group(child) => {
++                visit_group(child, transform, point, regions, index, hit)
++            },
++            SVGNode::Shape(shape) => {
++                let current = *index;
++                *index += 1;
++                if shape_contains(shape, transform, point, regions) {
++                    *hit = Some(current);
++                }
++            },
++        }
++    }
++}
++
++fn shape_contains(
++    shape: &SVGShape,
++    parent_transform: Affine,
++    point: Point,
++    regions: HitRegions,
++) -> bool {
++    let transform = parent_transform * shape.transform;
++    // Test in the shape's own space rather than transforming the outline, so
++    // a non-invertible transform (`scale(0)`) collapses to no hit instead of
++    // producing a degenerate outline.
++    let Some(local) = invert(transform).map(|inverse| inverse * point) else {
++        return false;
++    };
++
++    if regions.fill &&
++        let Some((_, rule)) = shape.fill &&
++        contains_with_rule(&shape.path, local, rule)
++    {
++        return true;
++    }
++
++    if regions.stroke &&
++        let Some(stroke) = &shape.stroke
++    {
++        // The stroke region is the shape's stroke *outline*, filled. This is
++        // why a `<line>`, which encloses no area, is still hittable.
++        let outline = kurbo::stroke(
++            shape.path.iter(),
++            &to_kurbo_stroke(stroke),
++            &StrokeOpts::default(),
++            STROKE_TOLERANCE,
++        );
++        if outline.contains(local) {
++            return true;
++        }
++    }
++
++    false
++}
++
++fn contains_with_rule(path: &BezPath, point: Point, rule: FillRule) -> bool {
++    let winding = path.winding(point);
++    match rule {
++        FillRule::NonZero => winding != 0,
++        FillRule::EvenOdd => winding % 2 != 0,
++    }
++}
++
++fn invert(transform: Affine) -> Option<Affine> {
++    (transform.determinant().abs() > f64::EPSILON).then(|| transform.inverse())
++}
++
++/// Dashes are deliberately dropped when building the hit region: a dashed
++/// stroke is hit along its whole length, not only on the dashes.
++fn to_kurbo_stroke(stroke: &Stroke) -> KurboStroke {
++    let cap = match stroke.line_cap {
++        LineCap::Butt => Cap::Butt,
++        LineCap::Round => Cap::Round,
++        LineCap::Square => Cap::Square,
++    };
++    KurboStroke {
++        width: stroke.width,
++        join: match stroke.line_join {
++            LineJoin::Miter => Join::Miter,
++            LineJoin::Round => Join::Round,
++            LineJoin::Bevel => Join::Bevel,
++        },
++        miter_limit: stroke.miter_limit,
++        start_cap: cap,
++        end_cap: cap,
++        dash_pattern: Default::default(),
++        dash_offset: 0.,
++    }
++}
++
++const STROKE_TOLERANCE: f64 = 0.1;
++
++#[cfg(test)]
++mod test {
++    use kurbo::{Affine, Point};
++
++    use super::{HitRegions, hit_test};
++    use crate::svg::geometry;
++    use crate::svg::paint::{FillRule, Paint, Rgba, Stroke};
++    use crate::svg::scene::{SVGGroup, SVGNode, SVGShape, SVGTree};
++
++    const RED: Rgba = Rgba {
++        red: 255,
++        green: 0,
++        blue: 0,
++        alpha: 255,
++    };
++
++    fn tree(children: Vec<SVGNode>) -> SVGTree {
++        SVGTree {
++            root: SVGGroup {
++                transform: Affine::IDENTITY,
++                opacity: 1.,
++                children,
++            },
++        }
++    }
++
++    fn filled(path: kurbo::BezPath, rule: FillRule) -> SVGNode {
++        SVGNode::Shape(SVGShape {
++            path,
++            transform: Affine::IDENTITY,
++            opacity: 1.,
++            fill: Some((RED, rule)),
++            stroke: None,
++        })
++    }
++
++    fn at(scene: &SVGTree, x: f64, y: f64) -> Option<usize> {
++        hit_test(scene, Point::new(x, y), HitRegions::PAINTED)
++    }
++
++    #[test]
++    fn hits_inside_the_outline_not_the_bounding_box() {
++        // A triangle: the top-left corner of its bounding box is outside it.
++        let triangle = geometry::polygon(&[(0., 0.), (10., 10.), (0., 10.)], true).expect("renders");
++        let scene = tree(vec![filled(triangle, FillRule::NonZero)]);
++        assert_eq!(at(&scene, 2., 8.), Some(0));
++        // Inside the bounding box, outside the triangle.
++        assert_eq!(at(&scene, 8., 2.), None);
++        // Outside the bounding box entirely.
++        assert_eq!(at(&scene, 20., 20.), None);
++    }
++
++    #[test]
++    fn fill_rule_decides_what_inside_means() {
++        let mut path = geometry::rect(0., 0., 8., 8., None, None).expect("renders");
++        path.extend(geometry::rect(2., 2., 4., 4., None, None).expect("renders"));
++        let nonzero = tree(vec![filled(path.clone(), FillRule::NonZero)]);
++        let evenodd = tree(vec![filled(path, FillRule::EvenOdd)]);
++        // The inner square is solid under non-zero and a hole under even-odd.
++        assert_eq!(at(&nonzero, 4., 4.), Some(0));
++        assert_eq!(at(&evenodd, 4., 4.), None);
++        // The outer ring hits under both.
++        assert_eq!(at(&evenodd, 1., 1.), Some(0));
++    }
++
++    #[test]
++    fn the_topmost_shape_wins() {
++        let scene = tree(vec![
++            filled(geometry::rect(0., 0., 10., 10., None, None).expect("renders"), FillRule::NonZero),
++            filled(geometry::rect(0., 0., 5., 5., None, None).expect("renders"), FillRule::NonZero),
++        ]);
++        // Where they overlap, the later (topmost) shape is returned.
++        assert_eq!(at(&scene, 2., 2.), Some(1));
++        // Where only the first covers, it is.
++        assert_eq!(at(&scene, 8., 8.), Some(0));
++    }
++
++    #[test]
++    fn strokes_are_hittable_where_fills_are_not() {
++        // A line encloses no area at all, so only its stroke can be hit.
++        let scene = tree(vec![SVGNode::Shape(SVGShape {
++            path: geometry::line(0., 5., 10., 5.),
++            transform: Affine::IDENTITY,
++            opacity: 1.,
++            fill: None,
++            stroke: Some(Stroke {
++                paint: Paint::Color(RED),
++                width: 4.,
++                ..Default::default()
++            }),
++        })]);
++        assert_eq!(at(&scene, 5., 5.), Some(0));
++        // Just inside the 4-wide stroke, then just outside it.
++        assert_eq!(at(&scene, 5., 6.5), Some(0));
++        assert_eq!(at(&scene, 5., 8.), None);
++    }
++
++    #[test]
++    fn dashed_strokes_are_hit_along_their_whole_length() {
++        let scene = tree(vec![SVGNode::Shape(SVGShape {
++            path: geometry::line(0., 5., 20., 5.),
++            transform: Affine::IDENTITY,
++            opacity: 1.,
++            fill: None,
++            stroke: Some(Stroke {
++                paint: Paint::Color(RED),
++                width: 4.,
++                dash_array: vec![2., 8.],
++                ..Default::default()
++            }),
++        })]);
++        // x=5 falls in a gap between dashes, but the line is still hittable
++        // there: hit regions ignore dashing.
++        assert_eq!(at(&scene, 5., 5.), Some(0));
++    }
++
++    #[test]
++    fn transforms_move_the_hit_region_with_the_shape() {
++        let mut shape = match filled(
++            geometry::rect(0., 0., 4., 4., None, None).expect("renders"),
++            FillRule::NonZero,
++        ) {
++            SVGNode::Shape(shape) => shape,
++            _ => unreachable!(),
++        };
++        shape.transform = Affine::translate((10., 0.));
++        let scene = SVGTree {
++            root: SVGGroup {
++                transform: Affine::translate((0., 10.)),
++                opacity: 1.,
++                children: vec![SVGNode::Shape(shape)],
++            },
++        };
++        assert_eq!(at(&scene, 12., 12.), Some(0));
++        assert_eq!(at(&scene, 2., 2.), None);
++    }
++
++    #[test]
++    fn a_collapsed_transform_cannot_be_hit() {
++        let mut shape = match filled(
++            geometry::rect(0., 0., 4., 4., None, None).expect("renders"),
++            FillRule::NonZero,
++        ) {
++            SVGNode::Shape(shape) => shape,
++            _ => unreachable!(),
++        };
++        // scale(0) is not invertible; the shape occupies no area.
++        shape.transform = Affine::scale(0.);
++        let scene = tree(vec![SVGNode::Shape(shape)]);
++        assert_eq!(at(&scene, 0., 0.), None);
++    }
++
++    #[test]
++    fn regions_can_be_restricted() {
++        let scene = tree(vec![SVGNode::Shape(SVGShape {
++            path: geometry::rect(0., 0., 10., 10., None, None).expect("renders"),
++            transform: Affine::IDENTITY,
++            opacity: 1.,
++            fill: Some((RED, FillRule::NonZero)),
++            stroke: Some(Stroke {
++                paint: Paint::Color(RED),
++                width: 4.,
++                ..Default::default()
++            }),
++        })]);
++        let fill_only = HitRegions {
++            fill: true,
++            stroke: false,
++        };
++        let stroke_only = HitRegions {
++            fill: false,
++            stroke: true,
++        };
++        // The centre is fill but not stroke.
++        assert_eq!(hit_test(&scene, Point::new(5., 5.), fill_only), Some(0));
++        assert_eq!(hit_test(&scene, Point::new(5., 5.), stroke_only), None);
++        // Just outside the edge is stroke but not fill.
++        assert_eq!(hit_test(&scene, Point::new(-1., 5.), stroke_only), Some(0));
++        assert_eq!(hit_test(&scene, Point::new(-1., 5.), fill_only), None);
++        // `pointer-events: none` never hits.
++        assert_eq!(hit_test(&scene, Point::new(5., 5.), HitRegions::NONE), None);
++    }
++}
+diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
+index ddd25b9d00d..c0b822b8337 100644
+--- a/components/layout/svg/mod.rs
++++ b/components/layout/svg/mod.rs
+@@ -26,6 +26,7 @@ use euclid::default::{Size2D, Transform2D};
+ use servo_config::pref;
+ 
+ pub(crate) mod geometry;
++pub(crate) mod hittest;
+ pub(crate) mod number;
+ pub(crate) mod paint;
+ pub(crate) mod render;
