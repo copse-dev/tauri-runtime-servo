@@ -314,6 +314,20 @@ servo = { path = "../servo/components/servo" }
   and is worth submitting upstream on its own.** The number-list parser
   moves into `layout_api` so both paths share one implementation.
 
+- **0015 — layout: honor `pathLength` when scaling dash patterns.** Servo
+  has never supported `pathLength` (a commented-out line in
+  `SVGGeometryElement.webidl`), and ignoring it does not merely misplace
+  dashes, it changes their count: on a 100-unit line with `pathLength="1"`
+  and `stroke-dasharray: 1 1`, fifty one-unit dashes instead of one. On a
+  long path those go sub-pixel and read as a solid, slightly translucent
+  stroke that never appears to move — an element that looks fully drawn
+  and frozen while its computed `stroke-dashoffset` advances correctly.
+  This is what breaks the standard "draw a line on" idiom, and it was the
+  actual cause of a frozen reasoning indicator that had been mistaken for
+  an animation bug. *Validated:* the test path now renders one dash
+  growing 5px → 80px then erasing, instead of a static comb.
+  Seam: **0 lines**.
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
