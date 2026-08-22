@@ -456,6 +456,28 @@ servo = { path = "../servo/components/servo" }
   **With 0022 + 0023, Mermaid renders**: themed nodes sized to their
   labels, readable text, edges. Arrowheads still missing (`<marker>`).
 
+- **0024 — layout: vertex markers.** `marker-start`/`-mid`/`-end`, placed
+  per SVG 2: outgoing direction at the first vertex, incoming at the
+  last, the bisector at interior corners, with a closed subpath folding
+  its closing edge into the first vertex. `auto-start-reverse`,
+  `markerUnits=strokeWidth` scaling, refX/refY mapped through the
+  marker's own `viewBox`, and viewport clipping via the existing group
+  clip. Placement math is pure (`svg/marker.rs`, eight tests); marker
+  content walks like `<use>` content with the same cycle guard; markers
+  render even on an unpainted shape, per spec. Needs **stylo-0005**.
+  Known imprecision: arcs were flattened to cubics at path construction,
+  so `marker-mid` fires on the phantom vertices.
+  *Validated:* four marker scenarios within **0.066%** of the
+  rasterization path; **Mermaid arrowheads render**, completing the
+  diagram; `svg/` WPT **+369**, same six known regressions.
+
+- **stylo-0005 — ungate the vertex-marker properties
+  (stylo repo, out of series).** The **fifth** set of SVG properties
+  found `#[cfg(feature = "gecko")]`-gated with nothing Gecko-specific
+  behind them. Upstream these five stylo patches should travel together.
+  Apply the stylo patches in order — this one's context assumes
+  0002–0004 are already in.
+
 - **stylo-0002 — ungate the SVG `pointer-events` keywords
   (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
