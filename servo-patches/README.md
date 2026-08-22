@@ -265,36 +265,61 @@ servo = { path = "../servo/components/servo" }
   Fill regions honour `fill-rule`, stroke regions are the stroke outline
   (so a `<line>`, which encloses no area, is still hittable), topmost in
   paint order wins, and a non-invertible transform collapses to no hit.
-  **The `pointer-events` keyword set is not implemented and cannot be
-  without a stylo change:** SVG 2's `visiblePainted`, `visibleFill`,
+  The `pointer-events` keyword set needs `stylo-0002` below; with it, the
+  full SVG set maps onto fill and stroke hit regions. *Validated:* 9
+  tests, chosen as the cases where bounding-box testing gives the wrong
+  answer. Seam: **0 lines**.
+
+- **0012 — layout: SVG image registry.** Per-node `ImageKey` caching keyed
+  on a content hash of the scene, so an unchanged SVG costs nothing on
+  reflow and an animating one costs one upload per changed frame.
+
+- **0013 — layout: paint native SVG, and let its descendants animate.**
+  Connects the renderer to the compositor and makes CSS animations run on
+  SVG content. `CrossProcessPaintApi` holds `Cell`s and is `!Sync` while
+  `LayoutContext` must be `Sync`, so the upload cannot happen where the
+  pixels are produced; keys come instead from `ImageCache::get_image_key`
+  (a pre-filled pool, already reachable from `ImageResolver`), rendering
+  is pure and runs on any layout thread, and the upload is queued and
+  drained on the layout thread before the display list is sent — the same
+  shape as `pending_rasterization_images`. Allocating the key up front
+  means the fragment carries a real one on the first frame.
+  Three things had to be fixed that were not anticipated: `svg > * {
+  display: none }` in `servo.css` prunes the style traversal so a `<g>`'s
+  children were never styled (moved to a stylesheet applied only when the
+  pref is off); the `transform` attribute was read without consulting the
+  CSS `transform` property; and `Animations::do_post_reflow_update`
+  cancels animations on any node that is not "being rendered", which a
+  boxless SVG descendant reports — so an SVG animation registered for one
+  tick and was dropped.
+  *Validated in a real browser:* rendering is within 0.13% of pixels of
+  the rasterization path (antialiasing only); a 4s spinner sampled at
+  +1.1s/+2.1s/+3.1s changes 0 and 0 pixels with the pref off and 2016 and
+  2201 with it on; `svg/` WPT +1 test and zero regressions over 1261
+  tests. Seam: **~25 added lines**.
+
+- **0014 — layout: honor `transform-origin`, and fix `viewBox`'s intrinsic
+  ratio.** The CSS `transform` property rotates about `transform-origin`
+  (initial `50% 50%`, reference box the nearest viewport); ignoring it
+  swung an animated `rotate()` around the viewport corner and off the
+  canvas. Every headless test passed regardless — a headed run found it
+  in one frame. Note the rasterization path is *worse* here, not merely
+  different: it drops `transform-origin` too, so the same page renders
+  blank under it.
+  Also fixes `SVGElementData::ratio_from_view_box`, which parsed `viewBox`
+  with `parse_integer`/`parse_unsigned_integer`, so `viewBox="0 0 24.5
+  12.25"` contributed no intrinsic ratio at all — measured, a 200px-wide
+  `<svg>` laid out 150px tall instead of 100px — and `viewBox="0,0,24,24"`
+  failed on the comma. **This half is on the default rasterization path
+  and is worth submitting upstream on its own.** The number-list parser
+  moves into `layout_api` so both paths share one implementation.
+
+- **stylo-0002 — ungate the SVG `pointer-events` keywords
+  (stylo repo, out of series).** `visiblePainted`, `visibleFill`,
   `visibleStroke`, `visible`, `painted`, `fill`, `stroke` and `all` are
-  every one of them behind `#[cfg(feature = "gecko")]` in stylo's
-  `PointerEvents`, leaving Servo with `auto` and `none`. Ungating them is
-  the same shape of change as `stylo-0001`. *Validated:* 8 tests, chosen
-  as the cases where bounding-box testing gives the wrong answer.
-  Seam: **0 lines**.
-
-- **0012 — layout: SVG image registry, and why it is not wired up.**
-  Per-node `ImageKey` caching keyed on a content hash of the scene, so an
-  unchanged SVG costs nothing on reflow and an animating one costs one
-  upload per changed frame. **Deliberately not connected**, and this is
-  the architectural finding of the whole exercise:
-  `CrossProcessPaintApi` holds `Cell`s and is `!Sync`, while
-  `LayoutContext` must be `Sync` because layout runs in parallel. Putting
-  the paint API where fragment construction can reach it fails to compile
-  at every parallel-layout call site. So an image key cannot be minted or
-  uploaded from the code that first knows the used size. Rendering in
-  parallel is fine — `render` is pure — only registration must happen on
-  the layout thread. The module documents three ways out and recommends
-  queueing `(node, pixmap)` the way `pending_rasterization_images`
-  already queues work. Left as a decision rather than guessed at: it
-  changes the fragment tree, and its frame-timing cost cannot be judged
-  without measuring. **Consequence: with the pref on, native SVG paints
-  nothing yet.** Seam: **0 lines**.
-
-  *Known nit:* 0010 creates `svg/scene.rs` with a blank line at EOF that
-  0012 removes, so `git am` warns and per-commit tidy would fail on the
-  intermediate state. Fix when rebasing for submission.
+  every one of them behind `#[cfg(feature = "gecko")]`, leaving Servo with
+  `auto` and `none`. Consumed by 0011. Servo's existing uses only ever
+  compare against `None`, so ungating cannot change their meaning.
 
 - **csp-0001 — match `'self'` for custom-scheme origins
   (rust-content-security-policy repo, out of series).** The `'self'`

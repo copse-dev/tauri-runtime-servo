@@ -1,0 +1,1000 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 22 Aug 2026 17:56:45 +0100
+Subject: [PATCH 13/14] layout: paint native SVG, and let its descendants
+ animate
+
+Connects the renderer to the compositor and makes CSS animations run on
+SVG content. With layout.svg.native.enabled on, inline <svg> is now laid
+out and painted natively instead of being serialized and rasterized.
+
+The delivery split. CrossProcessPaintApi holds Cells and is !Sync, while
+LayoutContext must be Sync because layout runs in parallel, so the
+upload cannot happen where the pixels are produced. Keys come instead
+from ImageCache::get_image_key, which pops a pre-filled pool and is
+already reachable from ImageResolver; rendering is pure and happens on
+whatever layout thread got there; and the upload is queued and drained
+on the layout thread between tree building and display-list
+construction, the same shape as pending_rasterization_images. Because
+the key is allocated up front rather than at upload time, the fragment
+carries a real key on the first frame, with no blank paint and second
+reflow. Uploads are skipped entirely unless a content hash of the scene
+or its device size changed.
+
+Three things had to be fixed that the plan did not anticipate.
+
+`svg > * { display: none }` in servo.css prunes the style traversal, so
+nothing below a direct child of the <svg> ever gets computed styles.
+Invisible to the rasterization path, which re-parses serialized markup,
+but fatal here: a <g>'s children simply did not exist, and a test page
+rendered its top-level shapes and dropped everything inside any group.
+Moved to its own stylesheet, applied only when the pref is off. Nothing
+is lost: an <svg> is replaced content, so layout builds no boxes for its
+descendants either way.
+
+The transform attribute was being read without consulting the CSS
+transform property, so a scripted or animated transform did nothing --
+which would also have silently defeated the animation work below. SVG 2
+makes the attribute a presentation attribute for the property, so the
+property is now consulted first and the attribute is the fallback.
+
+Animations::do_post_reflow_update cancels every animation on a node that
+is not "being rendered", and a boxless node reports exactly that. So an
+animation on an SVG descendant registered for a single tick and was then
+dropped -- visible as the animation set count going 1, 0. An SVG
+descendant on the native path is being rendered, it just has no CSS box,
+so node_rendering_type now says so. This is the phase the plan expected
+to be "mostly deletions"; it was not, and the reason is worth keeping.
+
+Validated against a real browser, not a trace:
+
+  - Shapes, groups, transforms, stylesheet-driven fill: pixel-identical
+    to the rasterization path bar antialiasing -- 0.13% of pixels differ
+    at zero tolerance, 0.02% at tolerance 8, all on shape edges where
+    vello and resvg disagree.
+  - A 4s spinner sampled at +1.1s, +2.1s and +3.1s: with the pref off,
+    0 and 0 pixels change -- the original bug. With it on, 2016 and 2201
+    pixels change. The spinner turns.
+  - Computed transform on an animating SVG path now advances in lockstep
+    with an equivalent HTML div; before, it stayed at the identity.
+  - svg/ WPT, same build, pref off vs on: +1 test
+    (painting/reftests/zero-scale-svg-transform-inside-g-tag.html),
+    zero regressions across 1261 tests and 3925 subtests.
+
+Seam: 47 added lines across pre-existing layout and script files.
+---
+ components/layout/context.rs                  |   9 +
+ components/layout/layout_impl.rs              |  36 ++-
+ components/layout/replaced.rs                 |  13 +-
+ components/layout/stylesheets/servo.css       |   9 -
+ .../layout/stylesheets/svg-rasterized.css     |  23 ++
+ components/layout/svg/hittest.rs              | 108 ++++++++-
+ components/layout/svg/image.rs                | 214 +++++++++---------
+ components/layout/svg/mod.rs                  | 145 ++++++++++++
+ components/layout/svg/resolve.rs              |  54 ++++-
+ components/layout/svg/tree.rs                 |   2 +-
+ 10 files changed, 477 insertions(+), 136 deletions(-)
+ create mode 100644 components/layout/stylesheets/svg-rasterized.css
+
+diff --git a/components/layout/context.rs b/components/layout/context.rs
+index 22b255c32ca..6d207165672 100644
+--- a/components/layout/context.rs
++++ b/components/layout/context.rs
+@@ -29,6 +29,8 @@ use style_traits::DevicePixel;
+ use uuid::Uuid;
+ use webrender_api::units::{DeviceIntSize, DeviceSize};
+ 
++use crate::svg::image::{NativeSVGImages, PendingSVGPaint};
++
+ pub(crate) type CachedImageOrError = Result<CachedImage, ResolveImageError>;
+ 
+ pub(crate) struct LayoutContext<'a> {
+@@ -137,6 +139,12 @@ pub(crate) struct ImageResolver {
+ 
+     /// The current animation timeline value used to properly initialize animating images.
+     pub animation_timeline_value: f64,
++
++    /// Compositor image keys for natively painted SVG; see [`crate::svg::image`].
++    pub native_svg_images: Arc<NativeSVGImages>,
++
++    /// SVG pixmaps rendered this reflow, awaiting upload by the layout thread.
++    pub pending_svg_paints: Mutex<Vec<PendingSVGPaint>>,
+ }
+ 
+ impl Drop for ImageResolver {
+@@ -149,6 +157,7 @@ impl Drop for ImageResolver {
+                     .lock()
+                     .is_empty()
+             );
++            assert!(self.pending_svg_paints.lock().is_empty());
+         }
+     }
+ }
+diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
+index 96ba4ec64ec..df60ec06d8c 100644
+--- a/components/layout/layout_impl.rs
++++ b/components/layout/layout_impl.rs
+@@ -82,6 +82,7 @@ use webrender_api::ExternalScrollId;
+ use webrender_api::units::{DevicePixel, LayoutVector2D};
+ 
+ use crate::accessibility_tree::AccessibilityTree;
++use crate::svg::image::NativeSVGImages;
+ use crate::context::{CachedImageOrError, ImageResolver, LayoutContext};
+ use crate::display_list::{DisplayListBuilder, HitTest, PaintTimingHandler, StackingContextTree};
+ use crate::dom::NodeExt;
+@@ -113,6 +114,7 @@ static HTML_MODE_CSS: &[u8] = include_bytes!("./stylesheets/html-mode.css");
+ 
+ /// A CSS file to style the Servo browser.
+ static SERVO_CSS: &[u8] = include_bytes!("./stylesheets/servo.css");
++static SVG_RASTERIZED_CSS: &[u8] = include_bytes!("./stylesheets/svg-rasterized.css");
+ 
+ /// A CSS file to style the presentational hints.
+ static PRESENTATIONAL_HINTS_CSS: &[u8] = include_bytes!("./stylesheets/presentational-hints.css");
+@@ -206,6 +208,9 @@ pub struct LayoutThread {
+     /// Cross-process access to the `Paint` API.
+     paint_api: CrossProcessPaintApi,
+ 
++    /// Compositor image keys for natively painted SVG; see [`crate::svg::image`].
++    native_svg_images: Arc<NativeSVGImages>,
++
+     /// Debug options, copied from configuration to this `LayoutThread` in order
+     /// to avoid having to constantly access the thread-safe global options.
+     debug: DiagnosticsLogging,
+@@ -246,7 +251,8 @@ impl Drop for LayoutThread {
+             .font_context
+             .collect_unused_webrender_resources(true /* all */);
+         self.paint_api
+-            .remove_unused_font_resources(self.webview_id.into(), keys, instance_keys)
++            .remove_unused_font_resources(self.webview_id.into(), keys, instance_keys);
++        self.native_svg_images.release_all(&self.paint_api);
+     }
+ }
+ 
+@@ -340,7 +346,17 @@ impl Layout for LayoutThread {
+             let Some(node) = node else {
+                 return NodeRenderingType::NotRendered;
+             };
+-            node.rendering_type()
++            match node.rendering_type() {
++                // Safety: this is a synchronous script query, so no layout
++                // workers are running.
++                NodeRenderingType::NotRendered => {
++                    #[expect(unsafe_code)]
++                    unsafe {
++                        crate::svg::rendering_type_in_native_subtree(node)
++                    }
++                },
++                rendering_type => rendering_type,
++            }
+         })
+     }
+ 
+@@ -813,6 +829,7 @@ impl LayoutThread {
+             box_tree: Default::default(),
+             fragment_tree: Default::default(),
+             stacking_context_tree: Default::default(),
++            native_svg_images: Default::default(),
+             paint_api: config.paint_api,
+             stylist: Stylist::new(device, QuirksMode::NoQuirks),
+             resolved_images_cache: Default::default(),
+@@ -1008,11 +1025,17 @@ impl LayoutThread {
+             pending_svg_elements_for_serialization: Mutex::default(),
+             animating_images: reflow_request.animating_images.clone(),
+             animation_timeline_value: reflow_request.animation_timeline_value,
++            native_svg_images: self.native_svg_images.clone(),
++            pending_svg_paints: Mutex::default(),
+         });
+         let mut reflow_statistics = Default::default();
+ 
+         let (mut reflow_phases_run, iframe_sizes, changed_web_fonts) = self
+             .restyle_and_build_trees(&mut reflow_request, document, root_element, &image_resolver);
++        NativeSVGImages::flush(
++            &self.paint_api,
++            std::mem::take(&mut *image_resolver.pending_svg_paints.lock()),
++        );
+         if self.build_stacking_context_tree_for_reflow(&reflow_request) {
+             reflow_phases_run.insert(ReflowPhasesRun::BuiltStackingContextTree);
+         }
+@@ -1653,7 +1676,7 @@ fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {
+             .get_or_init(|| {
+                 // FIXME: presentational-hints.css should be at author origin with zero specificity.
+                 //        (Does it make a difference?)
+-                let user_agent_stylesheets = vec![
++                let mut user_agent_stylesheets = vec![
+                     parse_ua_stylesheet(shared_lock, "user-agent.css", USER_AGENT_CSS),
+                     parse_ua_stylesheet(shared_lock, "servo.css", SERVO_CSS),
+                     parse_ua_stylesheet(
+@@ -1662,6 +1685,13 @@ fn get_ua_stylesheets(shared_lock: &SharedRwLock) -> Rc<UserAgentStylesheets> {
+                         PRESENTATIONAL_HINTS_CSS,
+                     ),
+                 ];
++                if !crate::svg::native_svg_enabled() {
++                    user_agent_stylesheets.push(parse_ua_stylesheet(
++                        shared_lock,
++                        "svg-rasterized.css",
++                        SVG_RASTERIZED_CSS,
++                    ));
++                }
+ 
+                 let html_mode_stylesheet =
+                     parse_ua_stylesheet(shared_lock, "html-mode.css", HTML_MODE_CSS);
+diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
+index ffa6ce767b0..24e4b67d6b0 100644
+--- a/components/layout/replaced.rs
++++ b/components/layout/replaced.rs
+@@ -46,7 +46,7 @@ use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBox
+ use crate::sizing::{
+     ComputeInlineContentSizes, InlineContentSizesResult, LazySize, SizeConstraint,
+ };
+-use crate::svg::{SVGViewport, native_svg_enabled};
++use crate::svg::{self, NativeSVG, SVGViewport, native_svg_enabled};
+ use crate::style_ext::{AspectRatio, Clamp, ComputedValuesExt, LayoutStyle};
+ use crate::{ConstraintSpace, ContainingBlock};
+ 
+@@ -153,6 +153,9 @@ pub(crate) enum ReplacedContentKind {
+     SVGElement {
+         vector_image: Option<VectorImage>,
+         has_viewbox: bool,
++        /// The natively painted scene; see [`crate::svg`].
++        #[ignore_malloc_size_of = "kurbo outlines behind an Arc"]
++        native: Option<Arc<NativeSVG>>,
+     },
+     Audio,
+ }
+@@ -346,9 +349,12 @@ impl ReplacedContents {
+             _ => unreachable!("SVG element can't contain a raster image."),
+         });
+ 
++        let native = svg::build_native(node, viewport, &natural_size);
++
+         (
+             ReplacedContentKind::SVGElement {
+                 vector_image,
++                native,
+                 has_viewbox: svg_data.view_box.is_some(),
+             },
+             natural_size,
+@@ -622,7 +628,12 @@ impl ReplacedContents {
+             ReplacedContentKind::SVGElement {
+                 vector_image,
+                 has_viewbox,
++                native,
+             } => {
++                if let Some(native) = native {
++                    return svg::make_fragments(layout_context, native, base, clip);
++                }
++
+                 let Some(vector_image) = vector_image else {
+                     return vec![];
+                 };
+diff --git a/components/layout/stylesheets/servo.css b/components/layout/stylesheets/servo.css
+index c6aac089058..2b6df4588a1 100644
+--- a/components/layout/stylesheets/servo.css
++++ b/components/layout/stylesheets/servo.css
+@@ -428,15 +428,6 @@ details[open]::details-content {
+   display: block;
+ }
+ 
+-/*
+- * Until servo supports svg properly, make sure to at least prevent svg
+- * children from being layed out and rendered like usual html.
+- * https://github.com/servo/servo/issues/10646
+- */
+-svg > * {
+-  display: none;
+-}
+-
+ *|*::-servo-anonymous-box {
+   unicode-bidi: inherit;
+   direction: inherit;
+diff --git a/components/layout/stylesheets/svg-rasterized.css b/components/layout/stylesheets/svg-rasterized.css
+new file mode 100644
+index 00000000000..30e2a5b21b0
+--- /dev/null
++++ b/components/layout/stylesheets/svg-rasterized.css
+@@ -0,0 +1,23 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++/*
++ * Applied only when `layout.svg.native.enabled` is off, i.e. when an <svg> is
++ * rendered by serializing its subtree and rasterizing it.
++ *
++ * Until servo supports svg properly, make sure to at least prevent svg
++ * children from being layed out and rendered like usual html.
++ * https://github.com/servo/servo/issues/10646
++ *
++ * This cannot apply on the native path. `display: none` prunes the style
++ * traversal, so the subtree below each direct child of the <svg> never gets
++ * computed styles at all — which is invisible to the rasterization path,
++ * because it re-parses serialized markup, but fatal to native layout, where a
++ * <g>'s children would simply not exist. Nothing is lost by dropping it: an
++ * <svg> is replaced content, so layout never builds boxes for its descendants
++ * either way.
++ */
++svg > * {
++  display: none;
++}
+diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
+index 7e9900e6654..0e271775448 100644
+--- a/components/layout/svg/hittest.rs
++++ b/components/layout/svg/hittest.rs
+@@ -10,13 +10,11 @@
+ //! self-overlapping path. All of that is geometry, so like [`super::render`]
+ //! this is pure and pixel-free.
+ //!
+-//! What is *not* here is the `pointer-events` keyword set. SVG 2 defines
+-//! `visiblePainted`, `visibleFill`, `visibleStroke`, `visible`, `painted`,
+-//! `fill`, `stroke` and `all`, and Servo supports none of them: every one is
+-//! behind `#[cfg(feature = "gecko")]` in stylo's `PointerEvents`, leaving
+-//! Servo with only `auto` and `none`. So the region rules below are
+-//! implemented and tested, but nothing can currently select between them from
+-//! CSS. See `stylo-0002` in the patch series.
++//! The `pointer-events` keyword set needs `stylo-0002` in the patch series:
++//! SVG 2's `visiblePainted`, `visibleFill`, `visibleStroke`, `visible`,
++//! `painted`, `fill`, `stroke` and `all` are all `#[cfg(feature = "gecko")]`
++//! in upstream stylo, leaving Servo with `auto` and `none`. With that patch
++//! applied, [`regions_for`] maps the full set onto the rules below.
+ //!
+ //! <https://svgwg.org/svg2-draft/interact.html#PointerEventsProperty>
+ 
+@@ -25,6 +23,25 @@ use kurbo::{Affine, BezPath, Cap, Join, Point, Shape as _, Stroke as KurboStroke
+ use super::paint::{FillRule, LineCap, LineJoin, Stroke};
+ use super::scene::{SVGGroup, SVGNode, SVGShape, SVGTree};
+ 
++/// `pointer-events`, mirrored locally.
++///
++/// stylo's `PointerEvents` is the source of truth; `resolve.rs` converts. The
++/// duplication buys the mapping table below being a pure function, which is
++/// where the actual subtlety lives.
++#[derive(Clone, Copy, Debug, PartialEq)]
++pub(crate) enum PointerEvents {
++    Auto,
++    None,
++    VisiblePainted,
++    VisibleFill,
++    VisibleStroke,
++    Visible,
++    Painted,
++    Fill,
++    Stroke,
++    All,
++}
++
+ /// Which regions of a shape respond to pointer events.
+ #[derive(Clone, Copy, Debug, Default, PartialEq)]
+ pub(crate) struct HitRegions {
+@@ -45,6 +62,42 @@ impl HitRegions {
+     };
+ }
+ 
++/// The regions a shape exposes, per its computed `pointer-events` and
++/// `visibility`.
++///
++/// The keyword set splits along two axes: whether `visibility: hidden` content
++/// can still be hit (the `visible*` values say no), and whether a region has
++/// to be *painted* to be hit (the `*painted` values and `auto` say yes, so a
++/// `fill: none` shape is transparent to the pointer). The `fill`/`stroke`/
++/// `all` values ignore both and hit the geometry regardless — which is what
++/// makes an invisible `<rect>` usable as a hit target.
++pub(crate) fn regions_for(
++    pointer_events: PointerEvents,
++    visible: bool,
++    has_fill: bool,
++    has_stroke: bool,
++) -> HitRegions {
++    let (needs_visible, needs_paint, fill, stroke) = match pointer_events {
++        PointerEvents::None => return HitRegions::NONE,
++        // On SVG content `auto` is defined to behave as `visiblePainted`.
++        PointerEvents::Auto | PointerEvents::VisiblePainted => (true, true, true, true),
++        PointerEvents::VisibleFill => (true, false, true, false),
++        PointerEvents::VisibleStroke => (true, false, false, true),
++        PointerEvents::Visible => (true, false, true, true),
++        PointerEvents::Painted => (false, true, true, true),
++        PointerEvents::Fill => (false, false, true, false),
++        PointerEvents::Stroke => (false, false, false, true),
++        PointerEvents::All => (false, false, true, true),
++    };
++    if needs_visible && !visible {
++        return HitRegions::NONE;
++    }
++    HitRegions {
++        fill: fill && (!needs_paint || has_fill),
++        stroke: stroke && (!needs_paint || has_stroke),
++    }
++}
++
+ /// The topmost shape in `tree` under `point`, which is in the same space the
+ /// tree was built in (the SVG viewport's coordinate system, CSS pixels).
+ ///
+@@ -165,7 +218,7 @@ const STROKE_TOLERANCE: f64 = 0.1;
+ mod test {
+     use kurbo::{Affine, Point};
+ 
+-    use super::{HitRegions, hit_test};
++    use super::{HitRegions, PointerEvents, hit_test, regions_for};
+     use crate::svg::geometry;
+     use crate::svg::paint::{FillRule, Paint, Rgba, Stroke};
+     use crate::svg::scene::{SVGGroup, SVGNode, SVGShape, SVGTree};
+@@ -313,6 +366,45 @@ mod test {
+         assert_eq!(at(&scene, 0., 0.), None);
+     }
+ 
++    #[test]
++    fn pointer_events_maps_onto_regions() {
++        let painted = |events| regions_for(events, true, true, true);
++        // `auto` behaves as `visiblePainted` on SVG content.
++        assert_eq!(painted(PointerEvents::Auto), HitRegions::PAINTED);
++        assert_eq!(painted(PointerEvents::VisiblePainted), HitRegions::PAINTED);
++        assert_eq!(painted(PointerEvents::None), HitRegions::NONE);
++
++        // The fill/stroke split.
++        assert_eq!(
++            painted(PointerEvents::VisibleFill),
++            HitRegions { fill: true, stroke: false }
++        );
++        assert_eq!(
++            painted(PointerEvents::VisibleStroke),
++            HitRegions { fill: false, stroke: true }
++        );
++
++        // `visibility: hidden` kills the `visible*` values but not the rest.
++        assert_eq!(regions_for(PointerEvents::VisiblePainted, false, true, true), HitRegions::NONE);
++        assert_eq!(regions_for(PointerEvents::Visible, false, true, true), HitRegions::NONE);
++        assert_eq!(regions_for(PointerEvents::Painted, false, true, true), HitRegions::PAINTED);
++        assert_eq!(regions_for(PointerEvents::All, false, true, true), HitRegions::PAINTED);
++
++        // The `*painted` values need actual paint; `all`/`fill`/`stroke` do
++        // not, which is what makes an unpainted <rect> usable as a target.
++        assert_eq!(regions_for(PointerEvents::Auto, true, false, false), HitRegions::NONE);
++        assert_eq!(regions_for(PointerEvents::All, true, false, false), HitRegions::PAINTED);
++        assert_eq!(
++            regions_for(PointerEvents::Visible, true, false, false),
++            HitRegions::PAINTED
++        );
++        // `painted` with only a stroke exposes only the stroke.
++        assert_eq!(
++            regions_for(PointerEvents::Painted, true, false, true),
++            HitRegions { fill: false, stroke: true }
++        );
++    }
++
+     #[test]
+     fn regions_can_be_restricted() {
+         let scene = tree(vec![SVGNode::Shape(SVGShape {
+diff --git a/components/layout/svg/image.rs b/components/layout/svg/image.rs
+index 6c119d145e3..05e4fc3c4d9 100644
+--- a/components/layout/svg/image.rs
++++ b/components/layout/svg/image.rs
+@@ -6,100 +6,86 @@
+ //!
+ //! The rasterization path never needed this: it hands a `data:` URL to the
+ //! image cache, which rasterizes with resvg and registers the result. The
+-//! native path paints in layout, so layout has to own the `ImageKey` — the
+-//! same thing canvas, WebGL and WebGPU already do through `CrossProcessPaintApi`.
++//! native path paints in layout, so layout has to own the `ImageKey`.
+ //!
+-//! Keys are cached per node and reused. A key is only re-uploaded when the
+-//! scene's content hash or its device size changes, so a reflow that does not
+-//! touch an SVG costs nothing, and an animating one costs exactly one upload
+-//! per changed frame.
+-//!
+-//! # Not wired up yet, and why
++//! # Why this is split in two
+ //!
+-//! This cannot be reached from `LayoutContext`. `CrossProcessPaintApi` holds
+-//! `Cell`s and so is `!Sync`, while `LayoutContext` must be `Sync` because
+-//! layout runs in parallel — putting one inside the other fails to compile
+-//! with `Cell<u32> cannot be shared between threads safely` at every
+-//! parallel-layout call site. So an image key cannot be minted or uploaded
+-//! from the code that builds fragments, which is where the used size (and
+-//! therefore the pixmap size) is first known.
++//! `CrossProcessPaintApi` holds `Cell`s and is therefore `!Sync`, while
++//! `LayoutContext` must be `Sync` because layout runs in parallel. So the
++//! upload cannot happen where the pixels are produced. It is split along that
++//! line:
+ //!
+-//! Rendering itself is fine in parallel: `render` is pure and touches nothing
+-//! shared. Only the registration has to happen on the layout thread. Three
+-//! ways out, in increasing order of cost:
++//! * **Allocation and rendering** happen during fragment construction, on
++//!   whatever layout thread got there. Neither needs the paint API — keys come
++//!   from [`ImageCache::get_image_key`], which pops a pre-filled pool and only
++//!   falls back to IPC when it is empty, and rendering is pure.
++//! * **Upload** is queued and drained on the layout thread between tree
++//!   building and display-list construction, which is the same shape as the
++//!   existing `pending_rasterization_images` queue.
+ //!
+-//! 1. Render during fragment construction, queue `(node, pixmap)` on a
+-//!    `Mutex<Vec<_>>` in `ImageResolver`, and drain it on the layout thread
+-//!    between tree building and display-list construction — the point where
+-//!    `LayoutThread` still owns `paint_api` and the key is still needed. This
+-//!    is the same shape as the existing `pending_rasterization_images` queue,
+-//!    so it follows precedent rather than inventing a mechanism. The fragment
+-//!    has to reference the node rather than carry the key, so the display-list
+-//!    builder can look the key up after the drain.
+-//! 2. Carry the `SVGTree` on the fragment and render *and* register during
+-//!    display-list construction, which is serial and on the layout thread.
+-//!    Simplest control flow, but it needs a new `Fragment` variant, and every
+-//!    exhaustive match over `Fragment` then has to grow an arm.
+-//! 3. Make `CrossProcessPaintApi` `Sync`. Smallest call-site change and the
+-//!    largest blast radius; an upstream decision, not one to take here.
++//! Because the key is allocated up front rather than at upload time, the
++//! fragment carries a real key on the first frame — no blank paint followed by
++//! a second reflow, which is how the rasterization path behaves.
+ //!
+-//! Option 1 is the recommendation. It is left undone deliberately: it is a
+-//! design choice with consequences for the fragment tree, and there is no way
+-//! to validate the resulting frame timing without measuring it.
++//! Keys are cached per node and reused. An upload is queued only when the
++//! scene's content hash or its device size changes, so a reflow that does not
++//! touch an SVG costs nothing and an animating one costs exactly one upload
++//! per changed frame.
+ 
+ use std::collections::HashMap;
+-use std::collections::hash_map::Entry as MapEntry;
+ 
+ use kurbo::Affine;
+-
++use net_traits::image_cache::ImageCache;
+ use paint_api::{CrossProcessPaintApi, SerializableImageData};
+ use parking_lot::Mutex;
+ use servo_base::generic_channel::GenericSharedMemory;
+-use servo_base::id::WebViewId;
+ use style::dom::OpaqueNode;
+ use webrender_api::units::DeviceIntSize;
+-use webrender_api::{
+-    ImageDescriptor, ImageDescriptorFlags, ImageFormat, ImageKey,
+-};
++use webrender_api::{ImageDescriptor, ImageDescriptorFlags, ImageFormat, ImageKey};
+ 
+ use super::render;
+ use super::scene::{SVGTree, content_hash};
+ 
+ /// What was registered for a node last time.
++#[derive(Clone, Copy)]
+ struct Registration {
+     key: ImageKey,
+     size: (u16, u16),
+     hash: u64,
+ }
+ 
+-/// Owns the compositor image keys for natively painted SVG.
++/// An upload waiting to be handed to the compositor on the layout thread.
++pub(crate) struct PendingSVGPaint {
++    key: ImageKey,
++    descriptor: ImageDescriptor,
++    data: SerializableImageData,
++    /// Whether the compositor has seen this key before, which decides between
++    /// `add_image` and `update_image`.
++    is_new: bool,
++}
++
++/// Compositor image keys for natively painted SVG.
++///
++/// Held by the `LayoutThread` rather than by `ImageResolver`, which is rebuilt
++/// every reflow: the whole point is to reuse a key across reflows instead of
++/// re-uploading unchanged pixels.
++#[derive(Default)]
+ pub(crate) struct NativeSVGImages {
+-    paint_api: CrossProcessPaintApi,
+-    webview_id: WebViewId,
+     registrations: Mutex<HashMap<OpaqueNode, Registration>>,
+ }
+ 
+ impl NativeSVGImages {
+-    pub(crate) fn new(paint_api: CrossProcessPaintApi, webview_id: WebViewId) -> Self {
+-        Self {
+-            paint_api,
+-            webview_id,
+-            registrations: Mutex::new(HashMap::new()),
+-        }
+-    }
+-
+-    /// Renders `tree` at `size` device pixels and returns a key the display
+-    /// list can reference, reusing the previous upload when nothing changed.
+-    ///
+-    /// `base` is the user-space-to-device transform: the viewport's
+-    /// `viewBox` mapping composed with the device pixel ratio.
++    /// Renders `tree` if it changed and returns the key the display list
++    /// should reference, queueing any upload onto `pending`.
+     ///
+-    /// Returns `None` for a zero-sized box, and if the compositor declines to
+-    /// mint a key — in which case the caller paints nothing rather than
+-    /// falling back to a stale image at the wrong size.
++    /// Returns `None` for a zero-sized box, and when the image cache cannot
++    /// supply a key — in which case the caller paints nothing rather than
++    /// showing a stale image at the wrong size.
+     pub(crate) fn image_key_for(
+         &self,
+         node: OpaqueNode,
++        image_cache: &dyn ImageCache,
++        pending: &Mutex<Vec<PendingSVGPaint>>,
+         tree: &SVGTree,
+         size: DeviceIntSize,
+         base: Affine,
+@@ -108,50 +94,64 @@ impl NativeSVGImages {
+         let height = u16::try_from(size.height).ok().filter(|height| *height > 0)?;
+         let hash = content_hash(tree);
+ 
+-        let mut registrations = self.registrations.lock();
+-        match registrations.entry(node) {
+-            MapEntry::Occupied(mut occupied) => {
+-                let registration = occupied.get_mut();
+-                if registration.size == (width, height) && registration.hash == hash {
+-                    return Some(registration.key);
+-                }
+-                let pixmap = render::render(tree, width, height, base);
+-                self.paint_api.update_image(
+-                    registration.key,
+-                    descriptor(width, height),
+-                    image_data(&pixmap),
+-                    None,
+-                );
+-                registration.size = (width, height);
+-                registration.hash = hash;
+-                Some(registration.key)
+-            },
+-            MapEntry::Vacant(vacant) => {
+-                let key = self.paint_api.generate_image_key_blocking(self.webview_id)?;
+-                let pixmap = render::render(tree, width, height, base);
+-                self.paint_api.add_image(
+-                    key,
+-                    descriptor(width, height),
+-                    image_data(&pixmap),
+-                    false,
+-                );
+-                vacant.insert(Registration {
+-                    key,
+-                    size: (width, height),
+-                    hash,
+-                });
+-                Some(key)
++        // Nothing changed: reuse the key and skip both the render and the
++        // upload. This is the common case on any reflow that did not touch
++        // this SVG.
++        let existing = self.registrations.lock().get(&node).copied();
++        if let Some(registration) = existing &&
++            registration.size == (width, height) &&
++            registration.hash == hash
++        {
++            return Some(registration.key);
++        }
++
++        // Render outside the lock: this is the expensive part, and holding a
++        // registry-wide mutex across it would serialize SVG painting across
++        // all layout threads. A given node is laid out at most once per pass,
++        // so two threads cannot be here for the same node at the same time.
++        let key = match existing {
++            Some(registration) => registration.key,
++            None => image_cache.get_image_key()?,
++        };
++        let pixmap = render::render(tree, width, height, base);
++
++        self.registrations.lock().insert(
++            node,
++            Registration {
++                key,
++                size: (width, height),
++                hash,
+             },
++        );
++        pending.lock().push(PendingSVGPaint {
++            key,
++            descriptor: descriptor(width, height),
++            data: SerializableImageData::Raw(GenericSharedMemory::from_vec(
++                pixmap.data_as_u8_slice().to_vec(),
++            )),
++            is_new: existing.is_none(),
++        });
++        Some(key)
++    }
++
++    /// Hands queued uploads to the compositor. Must run on the layout thread,
++    /// which is the only place `CrossProcessPaintApi` can be touched, and
++    /// before the display list is sent so the images exist when it is drawn.
++    pub(crate) fn flush(paint_api: &CrossProcessPaintApi, pending: Vec<PendingSVGPaint>) {
++        for paint in pending {
++            if paint.is_new {
++                paint_api.add_image(paint.key, paint.descriptor, paint.data, false);
++            } else {
++                paint_api.update_image(paint.key, paint.descriptor, paint.data, None);
++            }
+         }
+     }
+-}
+ 
+-impl Drop for NativeSVGImages {
+-    fn drop(&mut self) {
+-        // The keys outlive this layout pass in the compositor, so they have
+-        // to be handed back explicitly or every reflow leaks one per SVG.
+-        for registration in self.registrations.lock().values() {
+-            self.paint_api.delete_image(registration.key);
++    /// Releases every key back to the compositor. Called when the layout
++    /// thread goes away; without it each pipeline leaks one key per SVG.
++    pub(crate) fn release_all(&self, paint_api: &CrossProcessPaintApi) {
++        for registration in self.registrations.lock().drain() {
++            paint_api.delete_image(registration.1.key);
+         }
+     }
+ }
+@@ -162,16 +162,10 @@ fn descriptor(width: u16, height: u16) -> ImageDescriptor {
+         height as i32,
+         ImageFormat::RGBA8,
+         // Never opaque: an SVG only covers the pixels its shapes cover, and
+-        // marking it opaque would let WebRender skip blending and paint the
+-        // uncovered pixels as black.
++        // claiming otherwise would let WebRender skip blending and paint the
++        // uncovered pixels black. vello_cpu's `Pixmap` is premultiplied
++        // RGBA8, which is exactly what `ImageFormat::RGBA8` means here, so the
++        // bytes go across untouched.
+         ImageDescriptorFlags::empty(),
+     )
+ }
+-
+-/// vello_cpu's `Pixmap` is premultiplied RGBA8, which is exactly WebRender's
+-/// `ImageFormat::RGBA8`, so the bytes go across untouched.
+-fn image_data(pixmap: &vello_cpu::Pixmap) -> SerializableImageData {
+-    SerializableImageData::Raw(GenericSharedMemory::from_vec(
+-        pixmap.data_as_u8_slice().to_vec(),
+-    ))
+-}
+diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
+index 413ff3ec77b..34a7cbe7155 100644
+--- a/components/layout/svg/mod.rs
++++ b/components/layout/svg/mod.rs
+@@ -22,8 +22,17 @@
+ // caller yet. Remove this once that lands.
+ #![expect(dead_code)]
+ 
++use std::sync::Arc;
++
++use app_units::Au;
+ use euclid::default::{Size2D, Transform2D};
++use kurbo::Affine;
+ use servo_config::pref;
++use webrender_api::units::DeviceIntSize;
++
++use crate::context::LayoutContext;
++use crate::fragment_tree::{BaseFragment, Fragment, ImageFragment};
++use crate::geom::PhysicalRect;
+ 
+ pub(crate) mod geometry;
+ pub(crate) mod hittest;
+@@ -177,3 +186,139 @@ mod test {
+         assert_eq!(SVGViewport::new(Some("0 0 -1 1"), None).aspect_ratio(), None);
+     }
+ }
++
++/// A natively painted `<svg>`: the scene in user space, plus the viewport that
++/// maps it onto the element's content box.
++#[derive(Debug)]
++pub(crate) struct NativeSVG {
++    pub tree: scene::SVGTree,
++    pub viewport: SVGViewport,
++}
++
++/// Builds the native scene for an `<svg>`, or `None` when the pref is off.
++///
++/// Inside a `viewBox`, percentages resolve against the viewBox rather than
++/// against the CSS box — that is what establishing a viewport means — so the
++/// scene can be built here, before the used size is known. Without one, user
++/// space is the CSS box and the natural size is the best basis available at
++/// box construction.
++pub(crate) fn build_native(
++    node: script::layout_dom::ServoLayoutNode<'_>,
++    viewport: SVGViewport,
++    natural_size: &crate::replaced::NaturalSizes,
++) -> Option<Arc<NativeSVG>> {
++    native_svg_enabled().then(|| {
++        let user_space = match viewport.view_box {
++            Some(view_box) => (view_box.width as f64, view_box.height as f64),
++            None => (
++                natural_size.width.map_or(0., |width| width.to_f32_px() as f64),
++                natural_size.height.map_or(0., |height| height.to_f32_px() as f64),
++            ),
++        };
++        Arc::new(NativeSVG {
++            tree: tree::build(node, user_space),
++            viewport,
++        })
++    })
++}
++
++/// Paints `native` at the element's used size and returns the fragment that
++/// references the result.
++///
++/// Returns no fragments when the scene is empty, when the box has collapsed to
++/// nothing, or when no image key could be obtained — in each case painting
++/// nothing is right, and better than showing a stale frame at the wrong size.
++pub(crate) fn make_fragments(
++    layout_context: &LayoutContext,
++    native: &NativeSVG,
++    base: BaseFragment,
++    clip: PhysicalRect<Au>,
++) -> Vec<Fragment> {
++    // The tag is the identity the image key is cached against; a fragment
++    // without one is not a DOM node and cannot own a key.
++    let Some(node) = base.tag.map(|tag| tag.node) else {
++        return vec![];
++    };
++    let rect = base.rect();
++    if native.tree.is_empty() {
++        return vec![];
++    }
++
++    let device_pixel_ratio = layout_context.style_context.device_pixel_ratio().0;
++    let device_size = DeviceIntSize::new(
++        rect.size.width.scale_by(device_pixel_ratio).to_px(),
++        rect.size.height.scale_by(device_pixel_ratio).to_px(),
++    );
++
++    // User space -> content box -> device pixels. The viewport transform is
++    // applied here rather than baked into the tree because it depends on the
++    // used size, which is only known now.
++    let viewport_transform = native.viewport.transform(euclid::default::Size2D::new(
++        rect.size.width.to_f32_px(),
++        rect.size.height.to_f32_px(),
++    ));
++    let base_transform = Affine::scale(device_pixel_ratio as f64) *
++        Affine::new([
++            viewport_transform.m11 as f64,
++            viewport_transform.m12 as f64,
++            viewport_transform.m21 as f64,
++            viewport_transform.m22 as f64,
++            viewport_transform.m31 as f64,
++            viewport_transform.m32 as f64,
++        ]);
++
++    let resolver = &layout_context.image_resolver;
++    let Some(image_key) = resolver.native_svg_images.image_key_for(
++        node,
++        &*resolver.image_cache,
++        &resolver.pending_svg_paints,
++        &native.tree,
++        device_size,
++        base_transform,
++    ) else {
++        return vec![];
++    };
++
++    vec![Fragment::Image(Arc::new(ImageFragment {
++        base,
++        clip,
++        image_key: Some(image_key),
++        showing_broken_image_icon: false,
++        url: None,
++    }))]
++}
++
++/// Whether `node` is painted by an enclosing native SVG viewport.
++///
++/// Boxless nodes are normally "not being rendered", and `Animations`
++/// (`do_post_reflow_update`) cancels every animation on a node that reports
++/// that — which is why a CSS animation on an SVG descendant registers for a
++/// single tick and is then dropped. Inside a natively painted `<svg>` the
++/// descendant genuinely is rendered, it just has no CSS box of its own, so it
++/// has to say so or it can never animate.
++///
++/// # Safety
++///
++/// Walks DOM parents, so it may only be called from the script thread with no
++/// layout workers running. The one caller, `Layout::node_rendering_type`, is a
++/// synchronous script query and satisfies that.
++#[expect(unsafe_code)]
++pub(crate) unsafe fn rendering_type_in_native_subtree(
++    node: script::layout_dom::ServoLayoutNode<'_>,
++) -> layout_api::NodeRenderingType {
++    use layout_api::{LayoutElementType, LayoutNode as _, LayoutNodeType, NodeRenderingType};
++
++    if !native_svg_enabled() {
++        return NodeRenderingType::NotRendered;
++    }
++
++    // The walk is short in practice and only runs for nodes with no box.
++    let mut ancestor = unsafe { node.dangerous_dom_parent() };
++    while let Some(current) = ancestor {
++        if current.type_id() == Some(LayoutNodeType::Element(LayoutElementType::SVGSVGElement)) {
++            return NodeRenderingType::Rendered;
++        }
++        ancestor = unsafe { current.dangerous_dom_parent() };
++    }
++    NodeRenderingType::NotRendered
++}
+diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
+index 194f2a5a671..30d11b97af9 100644
+--- a/components/layout/svg/resolve.rs
++++ b/components/layout/svg/resolve.rs
+@@ -19,6 +19,7 @@ use layout_api::LayoutElement as _;
+ use style::color::{AbsoluteColor, ColorSpace};
+ use style::computed_values::stroke_linecap::T as StrokeLinecap;
+ use style::computed_values::stroke_linejoin::T as StrokeLinejoin;
++use style::computed_values::pointer_events::T as StyloPointerEvents;
+ use style::computed_values::visibility::T as Visibility;
+ use style::properties::ComputedValues;
+ use style::values::computed::{DProperty, Length, LengthPercentage};
+@@ -30,6 +31,7 @@ use style::values::generics::length::{GenericLengthPercentageOrAuto, GenericSize
+ use style::values::generics::svg::{SVGLength, SVGPaintKind, SVGStrokeDashArray};
+ 
+ use super::geometry::{self, PathSegment};
++use super::hittest::PointerEvents;
+ use super::paint::{FillRule, LineCap, LineJoin, Paint, PercentageBasis, Rgba, Stroke};
+ use super::transform::parse_transform_list;
+ use script::layout_dom::ServoLayoutElement;
+@@ -89,10 +91,35 @@ pub(crate) fn shape(
+     }
+ }
+ 
+-/// The element's own `transform` attribute, or `None` if it is malformed —
+-/// which per spec means the element is rendered untransformed rather than not
+-/// at all, so callers substitute the identity.
+-pub(crate) fn transform(element: ServoLayoutElement<'_>) -> Affine {
++/// The element's own transform.
++///
++/// SVG 2 makes `transform` a presentation attribute for the CSS `transform`
++/// property, so the property wins where both are present. Servo does not
++/// synthesize that hint (see [`super::transform`]), so the two sources are
++/// consulted in cascade order by hand: the computed property first, falling
++/// back to parsing the attribute.
++///
++/// A malformed attribute yields the identity rather than dropping the element,
++/// which is what the spec asks for.
++pub(crate) fn transform(element: ServoLayoutElement<'_>, style: &ComputedValues) -> Affine {
++    let computed = &style.get_box().transform;
++    if !computed.0.is_empty() {
++        // A transform needing a reference box (percentage translations) or a
++        // third dimension has no meaning here, so those fall through to the
++        // attribute rather than being applied wrongly.
++        if let Ok((matrix, is_3d)) = computed.to_transform_3d_matrix(None) &&
++            !is_3d
++        {
++            return Affine::new([
++                matrix.m11 as f64,
++                matrix.m12 as f64,
++                matrix.m21 as f64,
++                matrix.m22 as f64,
++                matrix.m41 as f64,
++                matrix.m42 as f64,
++            ]);
++        }
++    }
+     element
+         .attribute_as_str(&ns!(), &local_name!("transform"))
+         .and_then(parse_transform_list)
+@@ -332,3 +359,22 @@ fn path_segments(data: &style::values::specified::svg_path::SVGPathData) -> Vec<
+         })
+         .collect()
+ }
++
++/// stylo's `pointer-events` to the local mirror in [`super::hittest`].
++///
++/// The SVG keywords only exist with `stylo-0002` applied; upstream stylo gates
++/// all of them behind `#[cfg(feature = "gecko")]`.
++pub(crate) fn pointer_events(style: &ComputedValues) -> PointerEvents {
++    match style.get_inherited_ui().pointer_events {
++        StyloPointerEvents::Auto => PointerEvents::Auto,
++        StyloPointerEvents::None => PointerEvents::None,
++        StyloPointerEvents::Visiblepainted => PointerEvents::VisiblePainted,
++        StyloPointerEvents::Visiblefill => PointerEvents::VisibleFill,
++        StyloPointerEvents::Visiblestroke => PointerEvents::VisibleStroke,
++        StyloPointerEvents::Visible => PointerEvents::Visible,
++        StyloPointerEvents::Painted => PointerEvents::Painted,
++        StyloPointerEvents::Fill => PointerEvents::Fill,
++        StyloPointerEvents::Stroke => PointerEvents::Stroke,
++        StyloPointerEvents::All => PointerEvents::All,
++    }
++}
+diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
+index 13347360063..ba3ad6dba8d 100644
+--- a/components/layout/svg/tree.rs
++++ b/components/layout/svg/tree.rs
+@@ -102,7 +102,7 @@ fn build_node(
+         return None;
+     }
+ 
+-    let transform = resolve::transform(element);
++    let transform = resolve::transform(element, style);
+     let opacity = resolve::opacity(style);
+     // A group with zero opacity, and everything under it, is invisible.
+     if opacity == 0. {
