@@ -89,6 +89,11 @@ jni = "0.21"
 
 [features]
 default = ["x11", "dbus"]
+# Sets preferences that only exist on a servo tree with servo-patches/
+# applied (layout_svg_native_enabled arrives with patch 0009). Without this
+# feature the crate compiles against the stock pinned servo rev; enable it
+# together with a `[patch]` override pointing at the patched checkout.
+patched-servo = []
 devtools = ["tauri-runtime/devtools"]
 x11 = ["tao/x11"]
 macos-private-api = ["tauri-runtime/macos-private-api"]

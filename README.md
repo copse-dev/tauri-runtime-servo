@@ -121,7 +121,12 @@ performance close to Electron.
   native window are not supported yet.
 - In-process devtools window controls are not supported.
 - Engine gaps in Servo itself (at the pinned revision) include
-  `contenteditable` support and the CSS `:has()` selector.
+  `contenteditable` support and the CSS `:has()` selector. The
+  [`servo-patches/`](servo-patches) series fixes these and more; it is
+  entirely opt-in — apply it to local servo/stylo checkouts, add `[patch]`
+  overrides in your workspace, and enable this crate's `patched-servo`
+  feature (see `servo-patches/README.md`). Without all three, the crate
+  builds and runs against the stock pinned Servo.
 
 ## Repository layout
 
@@ -137,6 +142,9 @@ performance close to Electron.
 - `dbus` *(default)*: dbus for theme support on Linux.
 - `devtools`: enables devtools in release builds (see limitations above).
 - `macos-private-api`: transparent windows etc. on macOS.
+- `patched-servo`: sets preferences that only exist once
+  [`servo-patches/`](servo-patches) is applied (native SVG layout); pair it
+  with a `[patch]` override pointing at the patched servo checkout.
 - `tracing`: instrument with [`tracing`](https://docs.rs/tracing).
 
 ## License
