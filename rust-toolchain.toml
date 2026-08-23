@@ -1,0 +1,6 @@
+[toolchain]
+# Matches the toolchain servo itself pins at the rev in Cargo.toml, and the
+# version CI installs. Bump all three together (here, CI's dtolnay pin, and
+# rust-version in Cargo.toml if the floor moves).
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]

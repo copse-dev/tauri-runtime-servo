@@ -85,7 +85,8 @@ On Linux you need Servo's build dependencies, e.g. on Debian/Ubuntu:
 
 ```bash
 sudo apt-get install -y libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
-  libfreetype6-dev libharfbuzz-dev libx11-dev libxkbcommon-x11-dev lld
+  libfreetype6-dev libgtk-3-dev libharfbuzz-dev libwebkit2gtk-4.1-dev \
+  libx11-dev libxkbcommon-x11-dev lld
 export RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 ```
 

@@ -16,7 +16,9 @@ repository = "https://github.com/copse-dev/tauri-runtime-servo"
 categories = ["gui", "web-programming"]
 license = "Apache-2.0 OR MIT"
 edition = "2021"
-rust-version = "1.90"
+# Oldest toolchain the crate has actually been built with (the full servo
+# graph compiles on it); rust-toolchain.toml pins the development toolchain.
+rust-version = "1.94"
 
 [package.metadata.docs.rs]
 all-features = true
