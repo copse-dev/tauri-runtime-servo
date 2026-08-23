@@ -12,7 +12,7 @@ authors = [
   "Tauri Programme within The Commons Conservancy",
 ]
 homepage = "https://tauri.app/"
-repository = "https://github.com/jonathanKingston/tauri-runtime-servo"
+repository = "https://github.com/copse-dev/tauri-runtime-servo"
 categories = ["gui", "web-programming"]
 license = "Apache-2.0 OR MIT"
 edition = "2021"

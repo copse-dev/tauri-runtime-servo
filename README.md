@@ -47,7 +47,7 @@ tauri-build = "2"
 tauri = { version = "2", default-features = false, features = [
   "common-controls-v6",
 ] }
-tauri-runtime-servo = { git = "https://github.com/jonathanKingston/tauri-runtime-servo" }
+tauri-runtime-servo = { git = "https://github.com/copse-dev/tauri-runtime-servo" }
 ```
 
 Note that the `wry` feature of `tauri` must stay disabled — this runtime
