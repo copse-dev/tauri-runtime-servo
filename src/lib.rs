@@ -4379,7 +4379,7 @@ fn handle_event_loop<T: UserEvent>(
           TaoWindowEvent::ThemeChanged(theme) => {
             if let Some(window) = windows.0.borrow().get(&window_id) {
               for webview in &window.webviews {
-                if let Err(e) = webview.set_theme(map_theme(theme)) {
+                if let Err(e) = webview.set_theme(map_theme(&theme)) {
                   log::error!("failed to set theme: {e}");
                 }
               }
@@ -4834,11 +4834,6 @@ fn create_webview<T: UserEvent>(
 
   if url != "about:blank" {
     webview_builder = webview_builder.with_url(&url);
-  }
-
-  #[cfg(any(target_os = "windows", target_os = "android"))]
-  {
-    webview_builder = webview_builder.with_https_scheme(webview_attributes.use_https_scheme);
   }
 
   if webview_attributes.javascript_disabled {

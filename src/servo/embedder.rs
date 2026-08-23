@@ -24,10 +24,10 @@ use servo::{
   },
   DevicePoint, EventLoopWaker, ImeEvent, InputEvent, KeyboardEvent, LoadStatus, MouseButtonAction,
   MouseButtonEvent, MouseLeftViewportEvent, MouseMoveEvent, NavigationRequest,
-  OffscreenRenderingContext, Preferences, RenderingContext, Servo, ServoBuilder, TouchEvent,
-  TouchEventType, TouchId, TouchPointerType, UrlRequest, UserContentManager, UserScript,
-  WebView as ServoWebView, WebViewBuilder as ServoWebViewBuilder, WebViewDelegate, WheelDelta,
-  WheelEvent, WheelMode, WindowRenderingContext,
+  OffscreenRenderingContext, Preferences, RenderingContext, Servo, ServoBuilder,
+  Theme as ServoTheme, TouchEvent, TouchEventType, TouchId, TouchPointerType, UrlRequest,
+  UserContentManager, UserScript, WebView as ServoWebView, WebViewBuilder as ServoWebViewBuilder,
+  WebViewDelegate, WheelDelta, WheelEvent, WheelMode, WindowRenderingContext,
 };
 use tao::{
   dpi::{PhysicalPosition, PhysicalSize},
@@ -1001,6 +1001,11 @@ impl Embedder {
 
   pub fn is_shutdown(&self) -> bool {
     self.delegate.closed.get()
+  }
+
+  pub(crate) fn notify_theme_change(&self, theme: ServoTheme) {
+    self.webview.notify_theme_change(theme);
+    self.servo.spin_event_loop();
   }
 
   pub(crate) fn set_background_color(&self, background_color: [f64; 4]) {

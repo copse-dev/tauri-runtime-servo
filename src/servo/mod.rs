@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use servo::{CookieSource, StorageType, UrlRequest};
+use servo::{CookieSource, StorageType, Theme as ServoTheme, UrlRequest};
 use tao::{event_loop::EventLoopProxy, window::Window};
+use tauri_utils::Theme;
 use url::Url;
 
 use crate::{Rect, ServoError as Error, ServoResult as Result, WebViewId, RGBA};
@@ -265,6 +266,14 @@ impl InnerWebView {
   pub fn zoom(&self, scale_factor: f64) -> Result<()> {
     self.embedder.webview().set_page_zoom(scale_factor as f32);
     self.embedder.servo().spin_event_loop();
+    Ok(())
+  }
+
+  pub fn set_theme(&self, theme: Theme) -> Result<()> {
+    self.embedder.notify_theme_change(match theme {
+      Theme::Dark => ServoTheme::Dark,
+      _ => ServoTheme::Light,
+    });
     Ok(())
   }
 
