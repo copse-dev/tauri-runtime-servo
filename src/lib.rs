@@ -3781,6 +3781,13 @@ fn handle_user_message<T: UserEvent>(
             window.set_theme(to_tao_theme(theme));
           }
           WindowMessage::SetBackgroundColor(color) => {
+            #[cfg(windows)]
+            if let Some(window_wrapper) = windows.0.borrow_mut().get_mut(&id) {
+              window_wrapper.background_color = color.map(Into::into);
+              if let Some(surface) = &mut window_wrapper.surface {
+                window.draw_surface(surface, window_wrapper.background_color);
+              }
+            }
             window.set_background_color(color.map(Into::into))
           }
         }
@@ -4406,6 +4413,22 @@ fn handle_event_loop<T: UserEvent>(
             }
           }
           TaoWindowEvent::Resized(size) => {
+            // keep the transparent-window backdrop surface sized with the
+            // window, as the wry runtime does
+            #[cfg(windows)]
+            {
+              let mut windows_ref = windows.0.borrow_mut();
+              if let Some(window) = windows_ref.get_mut(&window_id) {
+                if window.is_window_transparent {
+                  let background_color = window.background_color;
+                  if let Some(surface) = &mut window.surface {
+                    if let Some(window) = &window.inner {
+                      window.draw_surface(surface, background_color);
+                    }
+                  }
+                }
+              }
+            }
             if let Some((Some(window), webviews)) = windows
               .0
               .borrow()
