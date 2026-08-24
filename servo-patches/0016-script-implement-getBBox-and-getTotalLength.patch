@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 21:03:44 +0100
-Subject: [PATCH 16/17] script: implement getBBox and getTotalLength
+Subject: [PATCH 16/24] script: implement getBBox and getTotalLength
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -45,7 +45,7 @@ operations, plus getBBox-04 — containers with children added and removed
 — which now passes outright.
 ---
  components/layout/layout_impl.rs              |  15 ++
- components/layout/svg/integration.rs          | 146 ++++++++++++++++++
+ components/layout/svg/integration.rs          | 143 ++++++++++++++++++
  components/layout/svg/tree.rs                 |   2 +-
  .../script/dom/svg/svggeometryelement.rs      |  23 +++
  .../script/dom/svg/svggraphicselement.rs      |  40 +++++
@@ -54,10 +54,10 @@ operations, plus getBBox-04 — containers with children added and removed
  .../webidls/SVGGeometryElement.webidl         |   2 +-
  .../webidls/SVGGraphicsElement.webidl         |  15 +-
  components/shared/layout/lib.rs               |  20 +++
- 10 files changed, 267 insertions(+), 9 deletions(-)
+ 10 files changed, 264 insertions(+), 9 deletions(-)
 
 diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
-index 45eb3b853f1..e5ed40bb512 100644
+index 45eb3b853f1bc85a4525a043ba077a0450d37dd6..e5ed40bb512a74e9dac9ceaf424e0677ef422c76 100644
 --- a/components/layout/layout_impl.rs
 +++ b/components/layout/layout_impl.rs
 @@ -476,6 +476,18 @@ impl Layout for LayoutThread {
@@ -90,7 +90,7 @@ index 45eb3b853f1..e5ed40bb512 100644
              },
              ReflowGoal::UpdateScrollNode(..) | ReflowGoal::UpdateTheRendering => {
 diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
-index 53f793ab3db..e4d2a55c724 100644
+index 53f793ab3db771f757cf541706c3ccab69cd57b5..d2fae1d7582eea53272adcd4818cbdd4f09e4a3b 100644
 --- a/components/layout/svg/integration.rs
 +++ b/components/layout/svg/integration.rs
 @@ -16,6 +16,8 @@ use kurbo::Affine;
@@ -114,7 +114,7 @@ index 53f793ab3db..e4d2a55c724 100644
          if current.type_id() == Some(LayoutNodeType::Element(LayoutElementType::SVGSVGElement)) {
              return NodeRenderingType::Rendered;
          }
-@@ -149,3 +156,142 @@ pub(crate) unsafe fn rendering_type_in_native_subtree(
+@@ -149,3 +156,139 @@ pub(crate) unsafe fn rendering_type_in_native_subtree(
      }
      NodeRenderingType::NotRendered
  }
@@ -133,9 +133,6 @@ index 53f793ab3db..e4d2a55c724 100644
 +/// satisfies that.
 +#[expect(unsafe_code)]
 +pub(crate) unsafe fn svg_geometry(node: ServoLayoutNode<'_>) -> Option<layout_api::SVGGeometry> {
-+    use kurbo::Shape as _;
-+    use layout_api::{LayoutElement as _, LayoutNode as _};
-+
 +    // Percentage geometry resolves against the nearest viewport, so the basis
 +    // has to come from the enclosing `<svg>`, not from this element.
 +    let basis = unsafe { enclosing_viewport_basis(node) }?;
@@ -210,7 +207,7 @@ index 53f793ab3db..e4d2a55c724 100644
 +unsafe fn enclosing_viewport_basis(
 +    node: ServoLayoutNode<'_>,
 +) -> Option<super::paint::PercentageBasis> {
-+    use layout_api::{LayoutElement as _, LayoutElementType, LayoutNode as _, LayoutNodeType};
++    use layout_api::{LayoutElementType, LayoutNode as _, LayoutNodeType};
 +
 +    use crate::dom::NodeExt as _;
 +
@@ -258,7 +255,7 @@ index 53f793ab3db..e4d2a55c724 100644
 +        .unwrap_or(0.) as f64
 +}
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index 3b5f0b147a4..efb2bef9afa 100644
+index 3b5f0b147a47fae6eb43fcb8542f1e161f340a73..efb2bef9afa25d53f10a9603762cfd6409a60741 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -169,7 +169,7 @@ fn build_node(
@@ -271,7 +268,7 @@ index 3b5f0b147a4..efb2bef9afa 100644
          .style_data()
          .map(|style_data| style_data.element_data.borrow())
 diff --git a/components/script/dom/svg/svggeometryelement.rs b/components/script/dom/svg/svggeometryelement.rs
-index c3d5e604d33..a48ea02ba55 100644
+index c3d5e604d33690cab73f079b6853d94231f2e578..a48ea02ba55e9ae5005221c64a4d9736e5954c6a 100644
 --- a/components/script/dom/svg/svggeometryelement.rs
 +++ b/components/script/dom/svg/svggeometryelement.rs
 @@ -9,6 +9,9 @@ use stylo_dom::ElementState;
@@ -312,7 +309,7 @@ index c3d5e604d33..a48ea02ba55 100644
      fn super_type(&self) -> Option<&dyn VirtualMethods> {
          Some(self.upcast::<SVGGraphicsElement>() as &dyn VirtualMethods)
 diff --git a/components/script/dom/svg/svggraphicselement.rs b/components/script/dom/svg/svggraphicselement.rs
-index e28fa8daf76..0eb16bfe833 100644
+index e28fa8daf766a2dc26cc332c749c08d9a1406ba2..0eb16bfe83346df15696531cd91566d0ce3cba43 100644
 --- a/components/script/dom/svg/svggraphicselement.rs
 +++ b/components/script/dom/svg/svggraphicselement.rs
 @@ -9,6 +9,12 @@ use stylo_dom::ElementState;
@@ -370,7 +367,7 @@ index e28fa8daf76..0eb16bfe833 100644
      fn super_type(&self) -> Option<&dyn VirtualMethods> {
          Some(self.upcast::<SVGElement>() as &dyn VirtualMethods)
 diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
-index c62d4662888..c513fd7f80d 100644
+index c62d4662888247765f1acd0e2f640e6e99ba3029..c513fd7f80d8f2e232d04795bae0ec6361509a01 100644
 --- a/components/script/dom/window/window.rs
 +++ b/components/script/dom/window/window.rs
 @@ -3041,6 +3041,15 @@ impl Window {
@@ -390,7 +387,7 @@ index c62d4662888..c513fd7f80d 100644
          self.layout_reflow(QueryMsg::CurrentCSSZoomQuery);
          self.layout
 diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
-index 15b225d1937..8306d902192 100644
+index 15b225d1937f5daf973f79d3fc840cee882ca81b..8306d9021925700c1a8b8629d5213b9d3c2c46d7 100644
 --- a/components/script_bindings/codegen/Bindings.conf
 +++ b/components/script_bindings/codegen/Bindings.conf
 @@ -1090,6 +1090,10 @@ DOMInterfaces = {
@@ -405,7 +402,7 @@ index 15b225d1937..8306d902192 100644
      'cx': ['Blur', 'Focus', 'Style'],
  },
 diff --git a/components/script_bindings/webidls/SVGGeometryElement.webidl b/components/script_bindings/webidls/SVGGeometryElement.webidl
-index 75b53f476a5..b5a50b26330 100644
+index 75b53f476a51191e8a2c5852541976064f77cb38..b5a50b26330063841f4db079131f8094a92480ba 100644
 --- a/components/script_bindings/webidls/SVGGeometryElement.webidl
 +++ b/components/script_bindings/webidls/SVGGeometryElement.webidl
 @@ -9,6 +9,6 @@ interface SVGGeometryElement : SVGGraphicsElement {
@@ -417,7 +414,7 @@ index 75b53f476a5..b5a50b26330 100644
    //DOMPoint getPointAtLength(float distance);
  };
 diff --git a/components/script_bindings/webidls/SVGGraphicsElement.webidl b/components/script_bindings/webidls/SVGGraphicsElement.webidl
-index 3f43ef05047..c27cc4c10d3 100644
+index 3f43ef05047411353c27654c0b92168e9a949362..c27cc4c10d34c4beea68cd5e1f26ceaf0039745a 100644
 --- a/components/script_bindings/webidls/SVGGraphicsElement.webidl
 +++ b/components/script_bindings/webidls/SVGGraphicsElement.webidl
 @@ -3,18 +3,19 @@
@@ -448,7 +445,7 @@ index 3f43ef05047..c27cc4c10d3 100644
    //DOMMatrix? getScreenCTM();
  };
 diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
-index 5cfe3303ec7..785df46d4ce 100644
+index 5cfe3303ec7a63693d0711dd7df328644bb8a6b8..785df46d4ce7a4ace7869e3915d7d664048f3136 100644
 --- a/components/shared/layout/lib.rs
 +++ b/components/shared/layout/lib.rs
 @@ -195,6 +195,18 @@ impl SVGElementData<'_> {

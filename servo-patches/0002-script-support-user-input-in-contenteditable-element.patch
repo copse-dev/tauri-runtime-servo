@@ -1,7 +1,7 @@
-From f5b4fda64df9e3023f954d2dbc2c96ef2aa178d8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jonathan Kingston <KingstonMailBox@gmail.com>
 Date: Sun, 2 Aug 2026 01:45:10 +0100
-Subject: [PATCH] script: support user input in contenteditable elements
+Subject: [PATCH 02/24] script: support user input in contenteditable elements
 
 (cherry picked from commit eaa6c602683ceb0a4a3c61de50a4380b866d4fd8)
 ---
@@ -9,7 +9,7 @@ Subject: [PATCH] script: support user input in contenteditable elements
  1 file changed, 59 insertions(+), 3 deletions(-)
 
 diff --git a/components/script/dom/document/document_event_handler.rs b/components/script/dom/document/document_event_handler.rs
-index eb1e0cc4ca..82de8e5d50 100644
+index eb1e0cc4ca5f4c9e160a359713cacda981b2e8f2..82de8e5d508154093bb6eb00d2877985d1db16d5 100644
 --- a/components/script/dom/document/document_event_handler.rs
 +++ b/components/script/dom/document/document_event_handler.rs
 @@ -58,6 +58,7 @@ use crate::dom::clipboardevent::ClipboardEventType;
@@ -113,6 +113,3 @@ index eb1e0cc4ca..82de8e5d50 100644
      pub(crate) fn do_keyboard_scroll(&self, cx: &mut JSContext, scroll: KeyboardScroll) {
          let scroll_axis = match scroll {
              KeyboardScroll::Left | KeyboardScroll::Right => ScrollingBoxAxis::X,
--- 
-2.43.0
-

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 21:51:36 +0100
-Subject: [PATCH 19/21] script: implement isPointInFill, isPointInStroke and
+Subject: [PATCH 19/24] script: implement isPointInFill, isPointInStroke and
  getPointAtLength
 
 The rest of the cheap half of Phase 0. All three were commented out in
@@ -42,7 +42,7 @@ which is Phase 0's remaining half.
  8 files changed, 277 insertions(+), 6 deletions(-)
 
 diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
-index e5ed40bb512..812fe761955 100644
+index e5ed40bb512a74e9dac9ceaf424e0677ef422c76..812fe7619554cacba5f2fa4f845a3a3e74de2883 100644
 --- a/components/layout/layout_impl.rs
 +++ b/components/layout/layout_impl.rs
 @@ -488,6 +488,22 @@ impl Layout for LayoutThread {
@@ -69,7 +69,7 @@ index e5ed40bb512..812fe761955 100644
      fn query_element_inner_outer_text(&self, node: layout_api::TrustedNodeAddress) -> String {
          with_layout_state(|| {
 diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
-index 7c8e4a2daf4..5485e11c2be 100644
+index 7c8e4a2daf43d243c7b47051ec52c48f9f65fb2b..5485e11c2be9e03dfc2d28fc8e1a8e1cd5e1f63a 100644
 --- a/components/layout/svg/hittest.rs
 +++ b/components/layout/svg/hittest.rs
 @@ -214,6 +214,61 @@ fn to_kurbo_stroke(stroke: &Stroke) -> KurboStroke {
@@ -188,10 +188,10 @@ index 7c8e4a2daf4..5485e11c2be 100644
      fn pointer_events_maps_onto_regions() {
          let painted = |events| regions_for(events, true, true, true);
 diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
-index e4d2a55c724..413e1436c9e 100644
+index d2fae1d7582eea53272adcd4818cbdd4f09e4a3b..44c179807df742f2580f7d9a09606444e321b6ca 100644
 --- a/components/layout/svg/integration.rs
 +++ b/components/layout/svg/integration.rs
-@@ -295,3 +295,65 @@ fn attribute_length(element: script::layout_dom::ServoLayoutElement<'_>, name: &
+@@ -292,3 +292,65 @@ fn attribute_length(element: script::layout_dom::ServoLayoutElement<'_>, name: &
          })
          .unwrap_or(0.) as f64
  }
@@ -258,7 +258,7 @@ index e4d2a55c724..413e1436c9e 100644
 +    })
 +}
 diff --git a/components/script/dom/svg/svggeometryelement.rs b/components/script/dom/svg/svggeometryelement.rs
-index a48ea02ba55..bd14aa5a39a 100644
+index a48ea02ba55e9ae5005221c64a4d9736e5954c6a..bd14aa5a39ac7117ef9d2ce0c0e8583c630774d0 100644
 --- a/components/script/dom/svg/svggeometryelement.rs
 +++ b/components/script/dom/svg/svggeometryelement.rs
 @@ -10,7 +10,12 @@ use crate::dom::bindings::inheritance::Castable;
@@ -342,7 +342,7 @@ index a48ea02ba55..bd14aa5a39a 100644
  
  impl VirtualMethods for SVGGeometryElement {
 diff --git a/components/script/dom/window/window.rs b/components/script/dom/window/window.rs
-index c513fd7f80d..4c3d6190958 100644
+index c513fd7f80d8f2e232d04795bae0ec6361509a01..4c3d6190958cab9a58e46d69493e2869a084c7e1 100644
 --- a/components/script/dom/window/window.rs
 +++ b/components/script/dom/window/window.rs
 @@ -3050,6 +3050,18 @@ impl Window {
@@ -365,7 +365,7 @@ index c513fd7f80d..4c3d6190958 100644
          self.layout_reflow(QueryMsg::CurrentCSSZoomQuery);
          self.layout
 diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
-index 8306d902192..6d04c0e7937 100644
+index 8306d9021925700c1a8b8629d5213b9d3c2c46d7..6d04c0e7937dff3160b93318794120c5166f2b07 100644
 --- a/components/script_bindings/codegen/Bindings.conf
 +++ b/components/script_bindings/codegen/Bindings.conf
 @@ -1090,6 +1090,10 @@ DOMInterfaces = {
@@ -380,7 +380,7 @@ index 8306d902192..6d04c0e7937 100644
      'cx': ['GetBBox'],
  },
 diff --git a/components/script_bindings/webidls/SVGGeometryElement.webidl b/components/script_bindings/webidls/SVGGeometryElement.webidl
-index b5a50b26330..68abc08c57f 100644
+index b5a50b26330063841f4db079131f8094a92480ba..68abc08c57f60cebc996968fcd3866d7c5106f1f 100644
 --- a/components/script_bindings/webidls/SVGGeometryElement.webidl
 +++ b/components/script_bindings/webidls/SVGGeometryElement.webidl
 @@ -7,8 +7,9 @@
@@ -397,7 +397,7 @@ index b5a50b26330..68abc08c57f 100644
 +  DOMPoint getPointAtLength(float distance);
  };
 diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
-index 785df46d4ce..debb26d512f 100644
+index 785df46d4ce7a4ace7869e3915d7d664048f3136..debb26d512f576816bc42d6c87c68693937dbaa4 100644
 --- a/components/shared/layout/lib.rs
 +++ b/components/shared/layout/lib.rs
 @@ -207,6 +207,22 @@ pub struct SVGGeometry {

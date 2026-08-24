@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 23:13:26 +0100
-Subject: [PATCH 21/21] script: add SVGForeignObjectElement and its getBBox
+Subject: [PATCH 21/24] script: add SVGForeignObjectElement and its getBBox
 
 <foreignObject> had no element type, so it fell back to plain SVGElement
 and getBBox was not a function on it. Adds the type and implements
@@ -50,10 +50,10 @@ no.
  create mode 100644 components/script_bindings/webidls/SVGForeignObjectElement.webidl
 
 diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
-index 707ab01688d..d569f256b7e 100644
+index 7facf1c2f1f1fc8acb376916c88e8797c6fea2b9..dac5d60a8fd06d00d4dcd640d891dee473725059 100644
 --- a/components/layout/svg/integration.rs
 +++ b/components/layout/svg/integration.rs
-@@ -218,6 +218,32 @@ unsafe fn bounds_of(
+@@ -215,6 +215,32 @@ unsafe fn bounds_of(
      let style = tree::primary_style(element)?;
  
      let name = element.local_name();
@@ -87,7 +87,7 @@ index 707ab01688d..d569f256b7e 100644
          let measured = super::text::measure(node, element, &style, font_context, basis)?;
          return Some((measured.bounds(), 0., measured.advance));
 diff --git a/components/script/dom/element/create.rs b/components/script/dom/element/create.rs
-index 3344961f31e..ce7c97a4486 100644
+index 3344961f31eb3dde97a8a73aa314b9452363e3b6..ce7c97a44864d2d18f47837e348b9b99a802f583 100644
 --- a/components/script/dom/element/create.rs
 +++ b/components/script/dom/element/create.rs
 @@ -90,6 +90,7 @@ use crate::dom::svg::svgcircleelement::SVGCircleElement;
@@ -107,7 +107,7 @@ index 3344961f31e..ce7c97a4486 100644
          local_name!("image") => make!(SVGImageElement),
          local_name!("line") => make!(SVGLineElement),
 diff --git a/components/script/dom/node/virtualmethods.rs b/components/script/dom/node/virtualmethods.rs
-index 0f01a4fcf4b..6ca3341435d 100644
+index 0f01a4fcf4b92401e94e3c283ceb7bf0db1084aa..6ca3341435dad4549e5614b765c7affe001c144d 100644
 --- a/components/script/dom/node/virtualmethods.rs
 +++ b/components/script/dom/node/virtualmethods.rs
 @@ -81,6 +81,7 @@ use crate::dom::svg::svgpolylineelement::SVGPolylineElement;
@@ -129,7 +129,7 @@ index 0f01a4fcf4b..6ca3341435d 100644
              SVGGraphicsElementTypeId::SVGTextContentElement(
                  SVGTextContentElementTypeId::SVGTextPositioningElement(
 diff --git a/components/script/dom/svg/mod.rs b/components/script/dom/svg/mod.rs
-index a20615c3e0d..ea6daa4949f 100644
+index a20615c3e0d8ab2e9e09b09cc7db2825421bfdf4..ea6daa4949f0db832c2fadf7b43e50f15779daca 100644
 --- a/components/script/dom/svg/mod.rs
 +++ b/components/script/dom/svg/mod.rs
 @@ -6,6 +6,7 @@ pub(crate) mod svgcircleelement;
@@ -141,7 +141,7 @@ index a20615c3e0d..ea6daa4949f 100644
  pub(crate) mod svggeometryelement;
  pub(crate) mod svggradientelement;
 diff --git a/components/script/dom/svg/svgelement.rs b/components/script/dom/svg/svgelement.rs
-index 40d9d538a29..404ceb8e27e 100644
+index 40d9d538a294a3c3ba277c1ce69291b730701aa1..404ceb8e27ec510ff1d125133c3bd87b66f35334 100644
 --- a/components/script/dom/svg/svgelement.rs
 +++ b/components/script/dom/svg/svgelement.rs
 @@ -34,6 +34,7 @@ use crate::dom::node::{Node, NodeTraits};
@@ -168,7 +168,7 @@ index 40d9d538a29..404ceb8e27e 100644
              self.parse_svg_attribute(
 diff --git a/components/script/dom/svg/svgforeignobjectelement.rs b/components/script/dom/svg/svgforeignobjectelement.rs
 new file mode 100644
-index 00000000000..316f9155b2f
+index 0000000000000000000000000000000000000000..316f9155b2f1dfb35531a90ee02eb7d0acef8721
 --- /dev/null
 +++ b/components/script/dom/svg/svgforeignobjectelement.rs
 @@ -0,0 +1,68 @@
@@ -242,7 +242,7 @@ index 00000000000..316f9155b2f
 +}
 diff --git a/components/script_bindings/webidls/SVGForeignObjectElement.webidl b/components/script_bindings/webidls/SVGForeignObjectElement.webidl
 new file mode 100644
-index 00000000000..1c3a63317f4
+index 0000000000000000000000000000000000000000..1c3a63317f459f222514097805b099e234433de7
 --- /dev/null
 +++ b/components/script_bindings/webidls/SVGForeignObjectElement.webidl
 @@ -0,0 +1,8 @@

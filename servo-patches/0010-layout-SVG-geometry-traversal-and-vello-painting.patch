@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 16:12:53 +0100
-Subject: [PATCH 10/17] layout: SVG geometry traversal and vello painting
+Subject: [PATCH 10/24] layout: SVG geometry traversal and vello painting
 
 Builds on the viewport from the previous patch: walks the <svg> subtree,
 resolves each element's geometry and paint from its computed style, and
@@ -69,7 +69,7 @@ Seam: 1 added line in a pre-existing file (the vello_cpu dependency).
  create mode 100644 components/layout/svg/tree.rs
 
 diff --git a/components/layout/Cargo.toml b/components/layout/Cargo.toml
-index 2f31a1163eb..ee7cb9eed5b 100644
+index 2f31a1163eb6216f07881b8a2e5c675e12433cc7..ee7cb9eed5bc59bb2ed3b276fb991ffb7c46f504 100644
 --- a/components/layout/Cargo.toml
 +++ b/components/layout/Cargo.toml
 @@ -71,6 +71,7 @@ unicode-script = { workspace = true }
@@ -82,7 +82,7 @@ index 2f31a1163eb..ee7cb9eed5b 100644
  
 diff --git a/components/layout/svg/geometry.rs b/components/layout/svg/geometry.rs
 new file mode 100644
-index 00000000000..6cc243f5049
+index 0000000000000000000000000000000000000000..6cc243f5049e494352cb94b2cb22c82177cab8f8
 --- /dev/null
 +++ b/components/layout/svg/geometry.rs
 @@ -0,0 +1,439 @@
@@ -526,7 +526,7 @@ index 00000000000..6cc243f5049
 +    }
 +}
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index 87f5a6317b1..ddd25b9d00d 100644
+index 87f5a6317b172a38e7521c5a8979ee92a075433c..ddd25b9d00d50e60cd7d5dc058eee9b697189d32 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -25,6 +25,14 @@
@@ -546,7 +546,7 @@ index 87f5a6317b1..ddd25b9d00d 100644
  use viewbox::{MeetOrSlice, PreserveAspectRatio, ViewBox};
 diff --git a/components/layout/svg/number.rs b/components/layout/svg/number.rs
 new file mode 100644
-index 00000000000..c6c0170c999
+index 0000000000000000000000000000000000000000..c6c0170c9992a2e1df32be1e0bb146fd66ea4532
 --- /dev/null
 +++ b/components/layout/svg/number.rs
 @@ -0,0 +1,114 @@
@@ -666,7 +666,7 @@ index 00000000000..c6c0170c999
 +}
 diff --git a/components/layout/svg/paint.rs b/components/layout/svg/paint.rs
 new file mode 100644
-index 00000000000..e387654133c
+index 0000000000000000000000000000000000000000..e387654133c314325e6561ba2ff85fa824a90b6b
 --- /dev/null
 +++ b/components/layout/svg/paint.rs
 @@ -0,0 +1,231 @@
@@ -903,7 +903,7 @@ index 00000000000..e387654133c
 +}
 diff --git a/components/layout/svg/render.rs b/components/layout/svg/render.rs
 new file mode 100644
-index 00000000000..17574562c15
+index 0000000000000000000000000000000000000000..17574562c15874380870eddd856d9ea82faa79f8
 --- /dev/null
 +++ b/components/layout/svg/render.rs
 @@ -0,0 +1,342 @@
@@ -1251,7 +1251,7 @@ index 00000000000..17574562c15
 +}
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
 new file mode 100644
-index 00000000000..194f2a5a671
+index 0000000000000000000000000000000000000000..194f2a5a671319b4121167830c7428e67dd04e53
 --- /dev/null
 +++ b/components/layout/svg/resolve.rs
 @@ -0,0 +1,334 @@
@@ -1591,7 +1591,7 @@ index 00000000000..194f2a5a671
 +}
 diff --git a/components/layout/svg/scene.rs b/components/layout/svg/scene.rs
 new file mode 100644
-index 00000000000..bd7ef4a6934
+index 0000000000000000000000000000000000000000..bd7ef4a6934cbaed3c3e88044bb66bebcc775c9e
 --- /dev/null
 +++ b/components/layout/svg/scene.rs
 @@ -0,0 +1,59 @@
@@ -1656,7 +1656,7 @@ index 00000000000..bd7ef4a6934
 +}
 diff --git a/components/layout/svg/transform.rs b/components/layout/svg/transform.rs
 new file mode 100644
-index 00000000000..18d2c56a557
+index 0000000000000000000000000000000000000000..18d2c56a5573278e7fd4437f07c8263617779730
 --- /dev/null
 +++ b/components/layout/svg/transform.rs
 @@ -0,0 +1,140 @@
@@ -1802,7 +1802,7 @@ index 00000000000..18d2c56a557
 +}
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
 new file mode 100644
-index 00000000000..ba8b6a3bc19
+index 0000000000000000000000000000000000000000..ba8b6a3bc192128a3f0506518590fe82b53abbad
 --- /dev/null
 +++ b/components/layout/svg/tree.rs
 @@ -0,0 +1,182 @@
@@ -1989,7 +1989,7 @@ index 00000000000..ba8b6a3bc19
 +        .and_then(|data| data.styles.get_primary().cloned())
 +}
 diff --git a/components/layout/svg/viewbox.rs b/components/layout/svg/viewbox.rs
-index d940a11267d..9bc7267dc92 100644
+index d940a11267d03302319fc174fba461ca5a9176ac..9bc7267dc92077761bf87a3393ce2b321bcc3a95 100644
 --- a/components/layout/svg/viewbox.rs
 +++ b/components/layout/svg/viewbox.rs
 @@ -15,6 +15,8 @@

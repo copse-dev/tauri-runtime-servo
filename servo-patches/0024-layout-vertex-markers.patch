@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 23 Aug 2026 00:56:48 +0100
-Subject: [PATCH] layout: vertex markers
+Subject: [PATCH 24/24] layout: vertex markers
 
 marker-start, marker-mid and marker-end, placed per SVG 2: outgoing
 direction at the first vertex, incoming at the last, the bisector of the
@@ -51,7 +51,7 @@ the pref-off baseline, up from +360, same six known regressions.
 
 diff --git a/components/layout/svg/marker.rs b/components/layout/svg/marker.rs
 new file mode 100644
-index 00000000000..562dd26535d
+index 0000000000000000000000000000000000000000..562dd26535d3fcc49e9b56cad63ba0138d501656
 --- /dev/null
 +++ b/components/layout/svg/marker.rs
 @@ -0,0 +1,503 @@
@@ -559,7 +559,7 @@ index 00000000000..562dd26535d
 +    }
 +}
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index 7e0c26e3ed1..ed2490886a7 100644
+index 7e0c26e3ed1af4648fc72330a2657efe5bdb9458..ed2490886a711afc60400860bcb2fdb30334c856 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -30,6 +30,7 @@ pub(crate) mod geometry;
@@ -571,7 +571,7 @@ index 7e0c26e3ed1..ed2490886a7 100644
  pub(crate) mod paint;
  pub(crate) mod pservers;
 diff --git a/components/layout/svg/pservers.rs b/components/layout/svg/pservers.rs
-index bb8170ebccd..cdc0a89c819 100644
+index bb8170ebccdad80be6127d0d26ff01f9259f49ba..cdc0a89c8195304499e42b785783fc81efaa3b58 100644
 --- a/components/layout/svg/pservers.rs
 +++ b/components/layout/svg/pservers.rs
 @@ -3,8 +3,8 @@
@@ -692,7 +692,7 @@ index bb8170ebccd..cdc0a89c819 100644
 +    }
 +}
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
-index feb50fdd031..6b8c8de8c5e 100644
+index feb50fdd031be69b84ec93e26a47363125b239c7..6b8c8de8c5e53c087685574024fdf32fa092de2d 100644
 --- a/components/layout/svg/resolve.rs
 +++ b/components/layout/svg/resolve.rs
 @@ -520,3 +520,29 @@ pub(crate) fn foreign_object_rect(
@@ -726,7 +726,7 @@ index feb50fdd031..6b8c8de8c5e 100644
 +    ]
 +}
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index 129526d2c78..559947aec41 100644
+index 129526d2c7879f6b63046c3e02725b7e15dc6733..559947aec415e3e685baabf63f603c5646ebc541 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -217,6 +217,20 @@ fn build_node<'dom>(
@@ -814,7 +814,7 @@ index 129526d2c78..559947aec41 100644
  
  /// `<text>`: a single shaped run, positioned by `x`/`y` and `text-anchor`.
 diff --git a/components/script/dom/svg/svgelement.rs b/components/script/dom/svg/svgelement.rs
-index 404ceb8e27e..c59ad13bf13 100644
+index 404ceb8e27ec510ff1d125133c3bd87b66f35334..c59ad13bf13a76f83976417f13269503f5048dc9 100644
 --- a/components/script/dom/svg/svgelement.rs
 +++ b/components/script/dom/svg/svgelement.rs
 @@ -388,6 +388,27 @@ impl<'dom> LayoutDom<'dom, SVGElement> {

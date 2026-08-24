@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 23 Aug 2026 00:21:20 +0100
-Subject: [PATCH 23/23] script: add SVGStyleElement, so <style> inside SVG
+Subject: [PATCH 23/24] script: add SVGStyleElement, so <style> inside SVG
  registers
 
 A <style> element inside an <svg> fell back to a bare SVGElement, so its
@@ -40,14 +40,14 @@ because <marker> is not implemented.
  components/script/dom/element/create.rs       |   2 +
  components/script/dom/node/virtualmethods.rs  |   4 +
  components/script/dom/svg/mod.rs              |   1 +
- components/script/dom/svg/svgstyleelement.rs  | 210 ++++++++++++++++++
+ components/script/dom/svg/svgstyleelement.rs  | 206 ++++++++++++++++++
  .../webidls/SVGStyleElement.webidl            |   8 +
- 5 files changed, 225 insertions(+)
+ 5 files changed, 221 insertions(+)
  create mode 100644 components/script/dom/svg/svgstyleelement.rs
  create mode 100644 components/script_bindings/webidls/SVGStyleElement.webidl
 
 diff --git a/components/script/dom/element/create.rs b/components/script/dom/element/create.rs
-index ce7c97a4486..c6d78f44a40 100644
+index ce7c97a44864d2d18f47837e348b9b99a802f583..c6d78f44a405eb8bf89894369c1c29e7668c6be7 100644
 --- a/components/script/dom/element/create.rs
 +++ b/components/script/dom/element/create.rs
 @@ -101,6 +101,7 @@ use crate::dom::svg::svgpolylineelement::SVGPolylineElement;
@@ -67,7 +67,7 @@ index ce7c97a4486..c6d78f44a40 100644
          local_name!("symbol") => make!(SVGSymbolElement),
          local_name!("text") => make!(SVGTextElement),
 diff --git a/components/script/dom/node/virtualmethods.rs b/components/script/dom/node/virtualmethods.rs
-index 6ca3341435d..84edf4fb5d8 100644
+index 6ca3341435dad4549e5614b765c7affe001c144d..84edf4fb5d8bd90e813a6a689731192ef0c2bbb5 100644
 --- a/components/script/dom/node/virtualmethods.rs
 +++ b/components/script/dom/node/virtualmethods.rs
 @@ -81,6 +81,7 @@ use crate::dom::svg::svgpolylineelement::SVGPolylineElement;
@@ -89,7 +89,7 @@ index 6ca3341435d..84edf4fb5d8 100644
              node.downcast::<SVGStopElement>().unwrap() as &dyn VirtualMethods
          },
 diff --git a/components/script/dom/svg/mod.rs b/components/script/dom/svg/mod.rs
-index ea6daa4949f..6cc198fcf98 100644
+index ea6daa4949f0db832c2fadf7b43e50f15779daca..6cc198fcf9863333856be8a61b807191e195a351 100644
 --- a/components/script/dom/svg/mod.rs
 +++ b/components/script/dom/svg/mod.rs
 @@ -20,6 +20,7 @@ pub(crate) mod svgpolylineelement;
@@ -102,10 +102,10 @@ index ea6daa4949f..6cc198fcf98 100644
  pub(crate) mod svgtextcontentelement;
 diff --git a/components/script/dom/svg/svgstyleelement.rs b/components/script/dom/svg/svgstyleelement.rs
 new file mode 100644
-index 00000000000..ac721cab34b
+index 0000000000000000000000000000000000000000..737ea840014696dd4633f40b8cf10063175df521
 --- /dev/null
 +++ b/components/script/dom/svg/svgstyleelement.rs
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,206 @@
 +/* This Source Code Form is subject to the terms of the Mozilla Public
 + * License, v. 2.0. If a copy of the MPL was not distributed with this
 + * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -268,10 +268,6 @@ index 00000000000..ac721cab34b
 +            );
 +        }
 +    }
-+
-+    pub(crate) fn get_stylesheet(&self) -> Option<Arc<Stylesheet>> {
-+        self.stylesheet.borrow().clone()
-+    }
 +}
 +
 +impl VirtualMethods for SVGStyleElement {
@@ -318,7 +314,7 @@ index 00000000000..ac721cab34b
 +}
 diff --git a/components/script_bindings/webidls/SVGStyleElement.webidl b/components/script_bindings/webidls/SVGStyleElement.webidl
 new file mode 100644
-index 00000000000..c3529229572
+index 0000000000000000000000000000000000000000..c3529229572257611c16bade331d4e5ea2fecd2c
 --- /dev/null
 +++ b/components/script_bindings/webidls/SVGStyleElement.webidl
 @@ -0,0 +1,8 @@

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 19:16:02 +0100
-Subject: [PATCH 15/17] layout: honor pathLength when scaling dash patterns
+Subject: [PATCH 15/24] layout: honor pathLength when scaling dash patterns
 
 pathLength renormalizes every distance-along-path computation so the
 path is treated as being that long. It is what makes the standard "draw
@@ -36,7 +36,7 @@ docs/plans/servo-svg-layout.md section 5.
  3 files changed, 78 insertions(+), 3 deletions(-)
 
 diff --git a/components/layout/svg/paint.rs b/components/layout/svg/paint.rs
-index d6a481a151e..27b55ed5dcd 100644
+index d6a481a151e4499739c9f9443291cb93d05211b9..27b55ed5dcd26b0d79b3e4d289aa29c63b16c2c7 100644
 --- a/components/layout/svg/paint.rs
 +++ b/components/layout/svg/paint.rs
 @@ -135,6 +135,30 @@ pub(crate) fn normalize_dash_array(values: &[f64]) -> Vec<f64> {
@@ -95,7 +95,7 @@ index d6a481a151e..27b55ed5dcd 100644
      fn percentage_bases_follow_the_viewport() {
          let basis = PercentageBasis::for_viewport(300., 400.);
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
-index 97620009598..706051f1a8d 100644
+index 97620009598b6a44fc6c8b24359ed6633ed1fc1c..706051f1a8d1987c808ff1110a371c7ca53183df 100644
 --- a/components/layout/svg/resolve.rs
 +++ b/components/layout/svg/resolve.rs
 @@ -298,6 +298,20 @@ impl AsLengthPercentage for NonNegative<LengthPercentage> {
@@ -120,7 +120,7 @@ index 97620009598..706051f1a8d 100644
  fn attribute_number(element: ServoLayoutElement<'_>, name: &LocalName) -> f64 {
      element
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index 98e3be730d0..3b5f0b147a4 100644
+index 98e3be730d0c419e784e742d05312c3d3b928939..3b5f0b147a47fae6eb43fcb8542f1e161f340a73 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -15,14 +15,14 @@

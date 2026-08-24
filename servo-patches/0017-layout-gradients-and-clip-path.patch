@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 21:03:45 +0100
-Subject: [PATCH 17/17] layout: gradients and clip-path
+Subject: [PATCH 17/24] layout: gradients and clip-path
 
 The two biggest remaining holes, and the two that mattered most to real
 content: gradients appear in 39 of the Copse app's own files and
@@ -62,7 +62,7 @@ regressed mid-way and prompted the href and percent-decoding work.
  create mode 100644 components/layout/svg/pservers.rs
 
 diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
-index 0e271775448..7c8e4a2daf4 100644
+index 0e271775448940299a1a001970f45000c29079f7..7c8e4a2daf43d243c7b47051ec52c48f9f65fb2b 100644
 --- a/components/layout/svg/hittest.rs
 +++ b/components/layout/svg/hittest.rs
 @@ -235,6 +235,7 @@ mod test {
@@ -124,7 +124,7 @@ index 0e271775448..7c8e4a2daf4 100644
          let fill_only = HitRegions {
              fill: true,
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index e1e57090aea..4aa6ddaa7c0 100644
+index e1e57090aeab0e1c2b4a4425b8663f837e23142b..4aa6ddaa7c005681ead038dd2b73b63b663c8171 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -31,6 +31,7 @@ pub(crate) mod integration;
@@ -136,7 +136,7 @@ index e1e57090aea..4aa6ddaa7c0 100644
  pub(crate) mod resolve;
  pub(crate) mod scene;
 diff --git a/components/layout/svg/paint.rs b/components/layout/svg/paint.rs
-index 27b55ed5dcd..aedd93346af 100644
+index 27b55ed5dcd26b0d79b3e4d289aa29c63b16c2c7..aedd93346af2fc2d0fc0169000417e16c328d401 100644
 --- a/components/layout/svg/paint.rs
 +++ b/components/layout/svg/paint.rs
 @@ -8,6 +8,10 @@
@@ -432,7 +432,7 @@ index 27b55ed5dcd..aedd93346af 100644
          use super::path_length_scale;
 diff --git a/components/layout/svg/pservers.rs b/components/layout/svg/pservers.rs
 new file mode 100644
-index 00000000000..846d46b5395
+index 0000000000000000000000000000000000000000..846d46b5395ac0374e15cae9a92a0ee38a4fc724
 --- /dev/null
 +++ b/components/layout/svg/pservers.rs
 @@ -0,0 +1,275 @@
@@ -712,7 +712,7 @@ index 00000000000..846d46b5395
 +    stops
 +}
 diff --git a/components/layout/svg/render.rs b/components/layout/svg/render.rs
-index 8382b12667c..6d532a12481 100644
+index 8382b12667c84acfafc81d96b58d5f6a794d7785..6d532a12481b605d88943c74399abb7e3370587c 100644
 --- a/components/layout/svg/render.rs
 +++ b/components/layout/svg/render.rs
 @@ -12,12 +12,16 @@
@@ -975,7 +975,7 @@ index 8382b12667c..6d532a12481 100644
          let pixmap = render(&scene, 16, 8, Affine::IDENTITY);
          // On for [0,4), off for [4,8), on again for [8,12).
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
-index 706051f1a8d..a2f37377325 100644
+index 706051f1a8d1987c808ff1110a371c7ca53183df..a2f37377325ba164a541f3582aa96a8615c57f89 100644
 --- a/components/layout/svg/resolve.rs
 +++ b/components/layout/svg/resolve.rs
 @@ -15,7 +15,7 @@
@@ -1162,7 +1162,7 @@ index 706051f1a8d..a2f37377325 100644
 +    ClipEverything,
 +}
 diff --git a/components/layout/svg/scene.rs b/components/layout/svg/scene.rs
-index f813a282926..38cad23f8fd 100644
+index f813a2829261feb23bd1faccb8e612701b323542..8e0846140d32a79c765bc6fcb01ec316bf271027 100644
 --- a/components/layout/svg/scene.rs
 +++ b/components/layout/svg/scene.rs
 @@ -13,7 +13,7 @@ use std::hash::{Hash, Hasher};
@@ -1170,7 +1170,7 @@ index f813a282926..38cad23f8fd 100644
  use kurbo::{Affine, BezPath, PathEl, Point};
  
 -use super::paint::{FillRule, Rgba, Stroke};
-+use super::paint::{FillRule, GradientGeometry, Paint, Rgba, Stroke};
++use super::paint::{FillRule, GradientGeometry, Paint, Stroke};
  
  /// A whole `<svg>` subtree, ready to paint.
  #[derive(Clone, Debug)]
@@ -1293,7 +1293,7 @@ index f813a282926..38cad23f8fd 100644
      path.elements().len().hash(hasher);
      for element in path.elements() {
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index efb2bef9afa..b8c40939fcc 100644
+index efb2bef9afa25d53f10a9603762cfd6409a60741..b8c40939fccf4ee61b286864ede8c7e33f085977 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -23,6 +23,7 @@ use style::properties::ComputedValues;
@@ -1431,7 +1431,7 @@ index efb2bef9afa..b8c40939fcc 100644
      (shape.fill.is_some() || shape.stroke.is_some()).then_some(SVGNode::Shape(shape))
  }
 diff --git a/components/script/dom/svg/svgelement.rs b/components/script/dom/svg/svgelement.rs
-index d5a02526b3f..d629680a14e 100644
+index d5a02526b3f727fec83b4003085192b2fe522ea9..d629680a14e0cfab22417053efddb7528417fada 100644
 --- a/components/script/dom/svg/svgelement.rs
 +++ b/components/script/dom/svg/svgelement.rs
 @@ -387,6 +387,33 @@ impl<'dom> LayoutDom<'dom, SVGElement> {

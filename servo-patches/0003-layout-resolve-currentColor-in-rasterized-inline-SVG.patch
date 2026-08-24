@@ -1,7 +1,7 @@
-From 3af5d8301a7d31cdede9154f4064029e515449a5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 14:58:47 +0000
-Subject: [PATCH] layout: resolve currentColor in rasterized inline SVG
+Subject: [PATCH 03/24] layout: resolve currentColor in rasterized inline SVG
 
 Inline <svg> subtrees are XML-serialized to a data: URL and rasterized
 with no CSS context, so currentColor resolved to the rasterizer's default
@@ -22,7 +22,7 @@ Claude-Session: https://claude.ai/code/session_018Jf9dnzfAnoLzptgcNbxDy
  2 files changed, 65 insertions(+)
 
 diff --git a/components/layout/Cargo.toml b/components/layout/Cargo.toml
-index 52e73ef68d..2f31a1163e 100644
+index 52e73ef68dd21760bdfa34e8a335e655d1527498..2f31a1163eb6216f07881b8a2e5c675e12433cc7 100644
 --- a/components/layout/Cargo.toml
 +++ b/components/layout/Cargo.toml
 @@ -21,6 +21,7 @@ tracing = ["dep:tracing"]
@@ -34,7 +34,7 @@ index 52e73ef68d..2f31a1163e 100644
  atomic_refcell = { workspace = true }
  bitflags = { workspace = true }
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 97f215706d..09dda617c1 100644
+index 97f215706dc18ece3cae638a3ae71e5525c98018..09dda617c133ecf23cec86cda46e694f2d0c3805 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -17,6 +17,7 @@ use servo_arc::Arc as ServoArc;
@@ -119,6 +119,3 @@ index 97f215706d..09dda617c1 100644
 +    let reencoded = base64::engine::general_purpose::STANDARD.encode(xml);
 +    ServoUrl::parse(&format!("data:image/svg+xml;base64,{reencoded}")).ok()
 +}
--- 
-2.43.0
-

@@ -1,7 +1,8 @@
-From 04663b1e3e4fc14495a5c1ee05ec8f4808ab5e43 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 17:04:36 +0000
-Subject: [PATCH] layout: flatten computed styles into rasterized inline SVG
+Subject: [PATCH 06/24] layout: flatten computed styles into rasterized inline
+ SVG
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -56,7 +57,7 @@ referenced element's at-definition styles.
  3 files changed, 243 insertions(+), 15 deletions(-)
 
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 09dda617c1..66859f743f 100644
+index 09dda617c133ecf23cec86cda46e694f2d0c3805..66859f743f20f6e68efbca7eaa4a666061f6e2cc 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -301,16 +301,22 @@ impl ReplacedContents {
@@ -319,7 +320,7 @@ index 09dda617c1..66859f743f 100644
      ServoUrl::parse(&format!("data:image/svg+xml;base64,{reencoded}")).ok()
  }
 diff --git a/components/layout/traversal.rs b/components/layout/traversal.rs
-index d3c328f975..a1674fdcbf 100644
+index d3c328f97555dde8f0602dd9008c30a15c2221d0..a1674fdcbf1ef4e533d7d1ae3093f5800e001a2d 100644
 --- a/components/layout/traversal.rs
 +++ b/components/layout/traversal.rs
 @@ -226,6 +226,22 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_below_dirty_root<'dom>(
@@ -346,7 +347,7 @@ index d3c328f975..a1674fdcbf 100644
      // and propagate resulting damage to ancestors.
      damage_set.apply_damage(layout_context, layout_roots)
 diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
-index d3ce15857b..5f38f8351e 100644
+index d3ce15857b3360fe76a521e88eddf979633d6742..5f38f8351ea58206181935f3a6a63a162f4b2c6a 100644
 --- a/components/script/dom/svg/svgsvgelement.rs
 +++ b/components/script/dom/svg/svgsvgelement.rs
 @@ -94,6 +94,7 @@ impl SVGSVGElement {
@@ -385,6 +386,3 @@ index d3ce15857b..5f38f8351e 100644
      fn process_use_elements(&self, cx: &mut JSContext, root_node: &Node) {
          for node in root_node.traverse_preorder(ShadowIncluding::No) {
              if let Some(element) = node.downcast::<Element>() &&
--- 
-2.43.0
-

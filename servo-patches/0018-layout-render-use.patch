@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 21:36:22 +0100
-Subject: [PATCH] layout: render <use>
+Subject: [PATCH 18/24] layout: render <use>
 
 Servo's SVGUseElement is a bare DOM stub with no shadow instancing, so
 there is nothing under a <use> to walk and it rendered nothing. Earlier
@@ -40,7 +40,7 @@ use-hidden-attr-change.
  2 files changed, 113 insertions(+), 12 deletions(-)
 
 diff --git a/components/layout/svg/pservers.rs b/components/layout/svg/pservers.rs
-index 846d46b5395..bb8170ebccd 100644
+index 846d46b5395ac0374e15cae9a92a0ee38a4fc724..bb8170ebccdad80be6127d0d26ff01f9259f49ba 100644
 --- a/components/layout/svg/pservers.rs
 +++ b/components/layout/svg/pservers.rs
 @@ -2,8 +2,9 @@
@@ -99,7 +99,7 @@ index 846d46b5395..bb8170ebccd 100644
          self.gradients.is_empty() && self.clip_paths.is_empty()
      }
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index b8c40939fcc..92c63e72001 100644
+index b8c40939fccf4ee61b286864ede8c7e33f085977..92c63e72001bb08198aad2e83f61b8b164032493 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -20,7 +20,7 @@ use layout_api::LayoutElement as _;

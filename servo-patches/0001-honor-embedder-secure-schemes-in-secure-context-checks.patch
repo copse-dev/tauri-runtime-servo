@@ -1,8 +1,8 @@
-From 86e93718a8b9f8621e7736e7bd36d8e0d1b799fb Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 12:09:51 +0000
-Subject: [PATCH] Honor embedder-registered secure schemes in secure-context
- checks
+Subject: [PATCH 01/24] Honor embedder-registered secure schemes in
+ secure-context checks
 
 Custom protocols registered through ProtocolHandler::is_secure() were only
 honored by the fetch layer (is_url_potentially_trustworthy); script's
@@ -25,7 +25,7 @@ Claude-Session: https://claude.ai/code/session_018Jf9dnzfAnoLzptgcNbxDy
  3 files changed, 56 insertions(+)
 
 diff --git a/components/net/protocols/mod.rs b/components/net/protocols/mod.rs
-index fbc2d68fa..ac14bbd1f 100644
+index fbc2d68fa545c27ce30ca41bbf542be551b52acb..ac14bbd1fbd3ea433fa028f6ed2d9571cdb1d319 100644
 --- a/components/net/protocols/mod.rs
 +++ b/components/net/protocols/mod.rs
 @@ -158,6 +158,17 @@ impl ProtocolRegistry {
@@ -47,7 +47,7 @@ index fbc2d68fa..ac14bbd1f 100644
          self.handlers
              .iter()
 diff --git a/components/servo/servo.rs b/components/servo/servo.rs
-index b08d06e85..a1989fe91 100644
+index b08d06e8502505823e6feaaed49370391f5581e5..a1989fe91ddd4298227bcaefb0bf15fe50b8f171 100644
 --- a/components/servo/servo.rs
 +++ b/components/servo/servo.rs
 @@ -946,6 +946,14 @@ impl Servo {
@@ -66,7 +66,7 @@ index b08d06e85..a1989fe91 100644
          // The `Paint` coordinates with the client window to create the final
          // rendered page and display it somewhere.
 diff --git a/components/url/lib.rs b/components/url/lib.rs
-index 5d1620d02..617745807 100644
+index 5d1620d02820da407de8cc2fca6635164ba1a726..617745807824ceb8d70553cc27ad8127e128b208 100644
 --- a/components/url/lib.rs
 +++ b/components/url/lib.rs
 @@ -13,6 +13,7 @@ use std::collections::hash_map::DefaultHasher;
@@ -127,6 +127,3 @@ index 5d1620d02..617745807 100644
          // Step 3. Return the result of executing § 3.1 Is origin potentially trustworthy? on url’s origin.
          self.origin().is_potentially_trustworthy()
      }
--- 
-2.43.0
-

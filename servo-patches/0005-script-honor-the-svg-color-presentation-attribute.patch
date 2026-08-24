@@ -1,7 +1,7 @@
-From f100a57693875c00c62452939dd252b5ee547d53 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 17:04:16 +0000
-Subject: [PATCH] script: honor the SVG color presentation attribute
+Subject: [PATCH 05/24] script: honor the SVG color presentation attribute
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
@@ -20,7 +20,7 @@ attribute_affects_presentational_hints.
  1 file changed, 11 insertions(+), 1 deletion(-)
 
 diff --git a/components/script/dom/svg/svgelement.rs b/components/script/dom/svg/svgelement.rs
-index a87640a1c7..d5a02526b3 100644
+index a87640a1c7ab13ddd7ace4dab6b69c4ec772de8d..d5a02526b3f727fec83b4003085192b2fe522ea9 100644
 --- a/components/script/dom/svg/svgelement.rs
 +++ b/components/script/dom/svg/svgelement.rs
 @@ -117,7 +117,8 @@ impl VirtualMethods for SVGElement {
@@ -49,6 +49,3 @@ index a87640a1c7..d5a02526b3 100644
          self.parse_svg_attribute(
              &parser_context,
              "fill",
--- 
-2.43.0
-
