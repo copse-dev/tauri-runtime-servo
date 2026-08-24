@@ -47,6 +47,15 @@ tauri-build = "2"
 tauri = { version = "2", default-features = false, features = [
   "common-controls-v6",
 ] }
+tauri-runtime-servo = "0.1"
+```
+
+The crate depends on stock libservo from crates.io. To build against the
+[`servo-patches/`](servo-patches) series instead, see [Using a patched
+Servo](#using-a-patched-servo). To track unreleased changes, depend on the
+repository directly:
+
+```toml
 tauri-runtime-servo = { git = "https://github.com/copse-dev/tauri-runtime-servo" }
 ```
 
@@ -88,6 +97,104 @@ sudo apt-get install -y libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
   libfreetype6-dev libgtk-3-dev libharfbuzz-dev libwebkit2gtk-4.1-dev \
   libx11-dev libxkbcommon-x11-dev lld
 export RUSTFLAGS="-C link-arg=-fuse-ld=lld"
+```
+
+## Using a patched Servo
+
+This crate depends on **stock libservo from crates.io**, which is what makes
+it publishable there: crates.io accepts registry dependencies only, so an
+engine fork pinned by git revision cannot travel inside a release.
+
+The [`servo-patches/`](servo-patches) series — native SVG layout,
+`contenteditable`, the CSS `:has()` selector — is therefore opt-in. To build
+against it, override the engine crates **in your own workspace root**.
+`[patch]` is honoured only there, never from a dependency's manifest.
+
+### 1. Check out the revisions behind the published crates
+
+A `[patch]` entry is accepted only if the checkout's own version satisfies
+the requirement it replaces, so start from the exact trees the published
+crates were cut from. This crate requires `servo = "0.5"`, which is servo
+`77fccacc` (2026-08-04); that tree in turn wants stylo `0.20`, which is
+stylo `67faaab3`:
+
+```bash
+git clone https://github.com/servo/servo
+git -C servo checkout -b tauri-runtime-patches 77fccacc1f1fdce10498d50173aafaa09d02879e
+
+git clone https://github.com/servo/stylo
+git -C stylo checkout -b tauri-runtime-patches 67faaab3ff7aa66780ec1d0f51ca47e177b812d3
+
+git clone https://github.com/rust-ammonia/rust-content-security-policy
+```
+
+### 2. Apply the series
+
+The servo and csp files are `git format-patch` output. The stylo files are
+plain diffs with a prose preamble, so `git am` rejects them — apply those
+with `git apply`:
+
+```bash
+git -C servo am ../tauri-runtime-servo/servo-patches/0*.patch
+git -C rust-content-security-policy am ../tauri-runtime-servo/servo-patches/csp-*.patch
+
+for p in ../tauri-runtime-servo/servo-patches/stylo-*.patch; do
+  git -C stylo apply --3way "$p"
+done
+```
+
+The series is authored against servo `f4dde27` and stylo `2d289c1` (the 0.19
+line), but applies cleanly to the revisions above — 24/24, 5/5 and 1/1 with
+no conflicts, verified against servo `77fccacc` and stylo `67faaab3`. Expect
+that to need rebasing once the pin moves further.
+
+### 3. Add the overrides to your workspace root
+
+Every entry goes under `[patch.crates-io]`: as of 0.5.0 servo takes its
+stylo crates from the registry too, so there is no git source left to
+override.
+
+```toml
+[patch.crates-io]
+servo = { path = "../servo/components/servo" }
+content-security-policy = { path = "../rust-content-security-policy" }
+
+# All eight stylo entries are required. Overriding `stylo` alone leaves the
+# others resolving from the registry, which puts a second copy of
+# `stylo_traits` and friends in the graph and fails to compile.
+selectors = { path = "../stylo/selectors" }
+servo_arc = { path = "../stylo/servo_arc" }
+stylo = { path = "../stylo/style" }
+stylo_atoms = { path = "../stylo/stylo_atoms" }
+stylo_dom = { path = "../stylo/stylo_dom" }
+stylo_malloc_size_of = { path = "../stylo/malloc_size_of" }
+stylo_static_prefs = { path = "../stylo/stylo_static_prefs" }
+stylo_traits = { path = "../stylo/style_traits" }
+```
+
+`stylo_derive`, `to_shmem`, and `to_shmem_derive` need no entries — the
+patched crates reach them by path.
+
+### 4. Enable the feature
+
+```toml
+[dependencies]
+tauri-runtime-servo = { version = "0.1", features = ["patched-servo"] }
+```
+
+`patched-servo` sets preferences that exist only once the series is applied
+(`layout_svg_native_enabled`, added by patch 0009). Without all four steps
+the crate builds and runs against stock Servo.
+
+### When the pin moves
+
+Whenever this crate's `servo` requirement changes, the checkout revisions
+above have to move with it, or the overrides stop resolving. The revision
+behind any published version is recorded in the crate itself:
+
+```bash
+curl -sL https://static.crates.io/crates/servo/servo-0.5.0.crate \
+  | tar xzO servo-0.5.0/.cargo_vcs_info.json
 ```
 
 ## Publishing
@@ -154,13 +261,11 @@ performance close to Electron.
 - Printing, global cookie enumeration, and multiple Servo webviews in one
   native window are not supported yet.
 - In-process devtools window controls are not supported.
-- Engine gaps in Servo itself (at the pinned revision) include
+- Engine gaps in Servo itself (at the pinned release) include
   `contenteditable` support and the CSS `:has()` selector. The
   [`servo-patches/`](servo-patches) series fixes these and more; it is
-  entirely opt-in — apply it to local servo/stylo checkouts, add `[patch]`
-  overrides in your workspace, and enable this crate's `patched-servo`
-  feature (see `servo-patches/README.md`). Without all three, the crate
-  builds and runs against the stock pinned Servo.
+  entirely opt-in — see [Using a patched Servo](#using-a-patched-servo).
+  Without it, the crate builds and runs against stock Servo.
 
 ## Repository layout
 

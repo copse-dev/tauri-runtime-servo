@@ -5,7 +5,6 @@ members = ["examples/helloworld"]
 name = "tauri-runtime-servo"
 version = "0.1.0"
 description = "Servo bindings to the Tauri runtime — an experimental Tauri runtime backed by the Servo web engine"
-exclude = ["CHANGELOG.md", "/target"]
 readme = "README.md"
 authors = [
   "Jonathan Kingston",
@@ -34,7 +33,15 @@ targets = [
 ]
 
 [dependencies]
-servo = { version = "0.4.0", git = "https://github.com/servo/servo.git", rev = "f4dde2701bacd4972e6cfa319a3f0cbc9be21f64" }
+# Stock libservo from crates.io, so this crate is publishable there. The
+# servo-patches/ series is opt-in via consumer [patch.crates-io] overrides —
+# see "Using a patched Servo" in the README. Keep this requirement satisfiable
+# by the servo tree the series is based on, or those overrides stop resolving.
+#
+# Not 0.4: servo-script 0.4.0 exact-pins `p256 =0.14.0-rc.14`, which no longer
+# compiles against the stable `primeorder 0.14.0` its caret requirement now
+# resolves to. 0.5.0 dropped those pre-release pins.
+servo = "0.5"
 tao = { version = "0.36", default-features = false, features = ["rwh_06"] }
 tauri-runtime = "2.11.3"
 tauri-utils = "2.9.3"

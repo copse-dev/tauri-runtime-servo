@@ -1,26 +1,36 @@
 # Servo patches
 
-Patches this runtime needs on top of the Servo revision pinned in
-`Cargo.toml`, each one a candidate upstream PR. This directory is the record;
-the *applied* form lives on a fork branch that the pin points at.
+Patches this runtime needs on top of stock Servo, each one a candidate
+upstream PR. This directory is the record; the *applied* form lives on local
+checkouts that consumers wire in with `[patch]` overrides — the crate itself
+always depends on the published libservo release named in `Cargo.toml`.
+
+The series is authored against servo `f4dde27` (2026-08-02) and stylo
+`2d289c1` (the 0.19 line). Those are **not** the revisions to build against —
+use the ones behind the published versions `Cargo.toml` requires, listed under
+"Using a patched Servo" in the top-level [README](../README.md). The series
+applies cleanly there as of servo `77fccacc` and stylo `67faaab3`; expect to
+rebase once the pin moves past them.
 
 ## Workflow
 
-1. Fork servo and branch from the pinned rev:
-   `git clone https://github.com/servo/servo && git checkout -b tauri-runtime-patches f4dde27`
-2. `git am servo-patches/*.patch`
-3. Push the branch to the fork and point `Cargo.toml`'s `servo` dependency at
-   it: `servo = { version = "0.4.0", git = "https://github.com/<fork>/servo.git", rev = "<tip>" }`
+1. Branch each upstream from the revision behind the published version this
+   crate requires — see the top-level [README](../README.md).
+2. Apply each group to its own repository: `0*.patch` to servo and
+   `csp-*.patch` to rust-content-security-policy with `git am`;
+   `stylo-*.patch` to stylo with `git apply` (those files are plain diffs
+   behind a prose preamble, not `git format-patch` output, so `git am`
+   rejects them).
+3. Build against the result with `[patch.crates-io]` overrides in the
+   *workspace root* — full recipe in the same README section.
 4. Submit each patch upstream; when one merges, advance the pin past it and
    delete the file here.
 
-Consumers can also try a patch without a runtime release by checking servo
-out locally, applying the series, and adding to their workspace root:
-
-```toml
-[patch."https://github.com/servo/servo.git"]
-servo = { path = "../servo/components/servo" }
-```
+Do **not** point `Cargo.toml`'s `servo` dependency at a fork. crates.io
+accepts registry dependencies only, so a git pin makes this crate
+unpublishable; cargo silently rewrites such a dependency to its `version`
+requirement at package time, which would ship a crate claiming to use the
+fork while actually resolving stock libservo.
 
 ## Landed upstream since the pin
 
