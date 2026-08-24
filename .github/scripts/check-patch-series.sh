@@ -24,7 +24,10 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 patches="$repo_root/servo-patches"
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+# Best-effort: a trap that fails becomes the script's exit status, and a
+# temp directory that outlives the job is not worth reporting a failure over.
+cleanup() { rm -rf "$work" 2> /dev/null || true; }
+trap cleanup EXIT
 
 # The upstream each group targets. Deliberately explicit rather than read out
 # of the crate metadata: if one of these ever moves, a human should notice
@@ -63,6 +66,10 @@ crate_revision() {
 checkout() {
   local name=$1 url=$2 rev=$3
   git init -q "$work/$name"
+  # Keep git from detaching background maintenance into a tree we are about
+  # to delete — that races the cleanup and leaves the directory non-empty.
+  git -C "$work/$name" config gc.auto 0
+  git -C "$work/$name" config maintenance.auto false
   git -C "$work/$name" remote add origin "$url"
   git -C "$work/$name" fetch -q --depth 1 origin "$rev" \
     || fail "$name: cannot fetch $rev from $url — was it force-pushed away?"
