@@ -14,11 +14,15 @@ authors = [
 homepage = "https://tauri.app/"
 repository = "https://github.com/copse-dev/tauri-runtime-servo"
 categories = ["gui", "web-programming"]
+keywords = ["tauri", "servo", "webview", "gui", "runtime"]
 license = "Apache-2.0 OR MIT"
 edition = "2021"
 # Oldest toolchain the crate has actually been built with (the full servo
 # graph compiles on it); rust-toolchain.toml pins the development toolchain.
 rust-version = "1.94"
+# servo-patches/ is opt-in material for downstream [patch] users and stays in
+# git only; everything it documents is reproduced in this README.
+exclude = ["CHANGELOG.md", "/target", "/examples", "/servo-patches"]
 
 [package.metadata.docs.rs]
 all-features = true

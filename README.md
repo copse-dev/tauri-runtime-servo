@@ -90,6 +90,39 @@ sudo apt-get install -y libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev \
 export RUSTFLAGS="-C link-arg=-fuse-ld=lld"
 ```
 
+## Publishing
+
+Releases go to crates.io from CI: push a `v*` tag and the
+[`publish.yml`](.github/workflows/publish.yml) workflow verifies the packaged
+crate builds on Windows, Linux, and macOS, then publishes it.
+
+Publishing uses [trusted
+publishing](https://crates.io/crates/rust-lang/crates-io-auth-action): the
+workflow exchanges GitHub's OIDC token for a short-lived crates.io token, so
+no long-lived API secret is stored in this repository. One-time setup:
+
+1. Log in to [crates.io](https://crates.io/), open your crate's settings (or
+   the publish form before the first release) and add a **trusted publishing**
+   rule for `copse-dev/tauri-runtime-servo`:
+   - workflow name: `publish.yml`
+   - environment name: `crates`
+2. Create the matching `crates` environment in the repository's GitHub
+   settings (Settings → Environments → New environment).
+
+For a new crate version:
+
+```bash
+# 1. Bump the version in Cargo.toml and commit.
+# 2. Rehearse without publishing (runs verify-package only):
+gh workflow run publish
+# 3. Tag and push; CI does the rest.
+git tag vX.Y.Z
+git push origin vX.Y.Z
+```
+
+The first publish must be done by an owner of the crate name — after that,
+trusted publishing works for subsequent versions.
+
 ## Platform support
 
 | Platform    | Supported                  |
