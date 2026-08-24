@@ -160,7 +160,7 @@ override.
 ```toml
 [patch.crates-io]
 servo = { path = "../servo/components/servo" }
-content-security-policy = { git = "https://github.com/copse-dev/rust-content-security-policy", rev = "88f691124272103c98a6560659c9b941694b62e2" }
+content-security-policy = { git = "https://github.com/copse-dev/rust-content-security-policy", rev = "fb5fd0f1af7f0c0dc315bf938507290b2e48cdbe" }
 
 # All eight stylo entries are required. Overriding `stylo` alone leaves the
 # others resolving from the registry, which puts a second copy of

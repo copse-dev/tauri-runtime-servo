@@ -29,9 +29,9 @@ rebase once the pin moves past them.
 3. Build against the result with `[patch.crates-io]` overrides in the
    *workspace root* — full recipe in the same README section. The CSP
    override resolves to `copse-dev/rust-content-security-policy`, where
-   `self-tuple-origin` (csp-0001, `eafc713`) and `self-default-ports`
+   `self-tuple-origin` (csp-0001, `e5457bc`) and `self-default-ports`
    (csp-0002, `72d0d95`) are the PR branches off upstream master
-   (`05528760`, 0.8.2), and `tauri-runtime-patches` (`88f6911`) carries
+   (`05528760`, 0.8.2), and `tauri-runtime-patches` (`fb5fd0f`) carries
    both.
 4. Submit each patch upstream; when one merges, advance the pin past it and
    delete the file here — or, for the CSP pair, drop the merged commit from
@@ -514,7 +514,7 @@ fork while actually resolving stock libservo.
   admits http(s)/ws(s) upgrades. Adds component comparison (equal
   scheme/host, ports equal or absent on both sides) when the user agent
   supplies a tuple origin, which 0008 makes Servo do. Lives as commit
-  `eafc713` on branch `self-tuple-origin` of
+  `e5457bc` on branch `self-tuple-origin` of
   `copse-dev/rust-content-security-policy`, off upstream master
   (`05528760`, 0.8.2). Ships `tests/self-tuple-origin.rs`; the crate's own
   suite (79 tests) stays green and `cargo fmt --check` is clean.
@@ -567,6 +567,6 @@ fork while actually resolving stock libservo.
   give the right answer — so no WPT run catches it.
 
   Lives as commit `72d0d95` on branch `self-default-ports`, off the same
-  upstream master. `tauri-runtime-patches` (`88f6911`) carries it on top of
+  upstream master. `tauri-runtime-patches` (`fb5fd0f`) carries it on top of
   csp-0001; the crate's own suite (79 tests) plus both new test files are
   green there, and `cargo fmt --check` is clean.
