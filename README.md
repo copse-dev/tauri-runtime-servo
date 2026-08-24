@@ -204,19 +204,33 @@ Releases go to crates.io from CI: push a `v*` tag and the
 crate builds on Windows, Linux, and macOS, then publishes it.
 
 Publishing uses [trusted
-publishing](https://crates.io/crates/rust-lang/crates-io-auth-action): the
-workflow exchanges GitHub's OIDC token for a short-lived crates.io token, so
-no long-lived API secret is stored in this repository. One-time setup:
+publishing](https://github.com/rust-lang/crates-io-auth-action): the workflow
+exchanges GitHub's OIDC token for a short-lived crates.io token, so no
+long-lived API secret is stored in this repository.
 
-1. Log in to [crates.io](https://crates.io/), open your crate's settings (or
-   the publish form before the first release) and add a **trusted publishing**
-   rule for `copse-dev/tauri-runtime-servo`:
+### One-time setup
+
+crates.io accepts a trusted publishing rule only for a crate that already
+exists — there is no pre-registration for an unclaimed name — so the first
+release is manual:
+
+1. Publish the first version by hand from a clean checkout, using a token
+   from [crates.io/settings/tokens](https://crates.io/settings/tokens). This
+   creates the crate and makes you its owner:
+
+   ```bash
+   cargo login
+   cargo publish --locked
+   ```
+
+2. On the crate's crates.io settings page, add a **trusted publishing** rule
+   for `copse-dev/tauri-runtime-servo`:
    - workflow name: `publish.yml`
    - environment name: `crates`
-2. Create the matching `crates` environment in the repository's GitHub
+3. Create the matching `crates` environment in the repository's GitHub
    settings (Settings → Environments → New environment).
 
-For a new crate version:
+### Every release after that
 
 ```bash
 # 1. Bump the version in Cargo.toml and commit.
@@ -227,8 +241,8 @@ git tag vX.Y.Z
 git push origin vX.Y.Z
 ```
 
-The first publish must be done by an owner of the crate name — after that,
-trusted publishing works for subsequent versions.
+A tag must name a version that is not on crates.io yet, so the first tagged
+release comes *after* the one published by hand — not the same version.
 
 ## Platform support
 
