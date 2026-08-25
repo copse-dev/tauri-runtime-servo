@@ -71,8 +71,9 @@ checkout() {
   git -C "$work/$name" config gc.auto 0
   git -C "$work/$name" config maintenance.auto false
   git -C "$work/$name" remote add origin "$url"
-  git -C "$work/$name" fetch -q --depth 1 origin "$rev" \
-    || fail "$name: cannot fetch $rev from $url — was it force-pushed away?"
+  # Returns non-zero rather than exiting: one caller wants to report the
+  # failure in its own terms.
+  git -C "$work/$name" fetch -q --depth 1 origin "$rev" || return 1
   git -C "$work/$name" -c advice.detachedHead=false checkout -q FETCH_HEAD
   git -C "$work/$name" config user.name "patch series check"
   git -C "$work/$name" config user.email "ci@invalid"
@@ -93,24 +94,22 @@ csp_version=$(locked_version content-security-policy)
 
 servo_rev=$(crate_revision servo "$servo_version")
 stylo_rev=$(crate_revision stylo "$stylo_version")
-csp_rev=$(crate_revision content-security-policy "$csp_version")
 
 printf '  %-26s %-10s %s\n' servo "$servo_version" "$servo_rev"
 printf '  %-26s %-10s %s\n' stylo "$stylo_version" "$stylo_rev"
-printf '  %-26s %-10s %s\n' content-security-policy "$csp_version" "$csp_rev"
 echo
 
-checkout servo "$servo_upstream" "$servo_rev"
-checkout stylo "$stylo_upstream" "$stylo_rev"
-checkout csp "$csp_upstream" "$csp_rev"
+checkout servo "$servo_upstream" "$servo_rev" \
+  || fail "servo: cannot fetch $servo_rev from $servo_upstream — was it force-pushed away?"
+checkout stylo "$stylo_upstream" "$stylo_rev" \
+  || fail "stylo: cannot fetch $stylo_rev from $stylo_upstream — was it force-pushed away?"
 
 status=0
 
-# --- servo and csp: format-patch output, applied with git am ----------------
+# --- servo: format-patch output, applied with git am ------------------------
 
-for group in "servo:0*.patch" "csp:csp-*.patch"; do
-  name=${group%%:*}
-  glob=${group#*:}
+apply_am_group() {
+  local name=$1 glob=$2 expected before applied
   expected=$(count_files "$glob")
   [ "$expected" -gt 0 ] || fail "no patches matched $glob"
 
@@ -129,7 +128,65 @@ for group in "servo:0*.patch" "csp:csp-*.patch"; do
     git -C "$work/$name" am --abort > /dev/null 2>&1 || true
     status=1
   fi
-done
+}
+
+apply_am_group servo "0*.patch"
+
+# --- content-security-policy: a fork pin, or patch files here ---------------
+#
+# These two are alternatives, and the README decides which. When the override
+# names a git rev, the crate's fixes live as commits on a fork and there is
+# nothing to apply — what can rot instead is the pin itself, so check that.
+# When it does not, they are .patch files here like the rest of the series.
+# Checking whichever the README documents keeps this honest across the move
+# rather than pinning the check to one arrangement.
+
+csp_override=$(grep -E '^content-security-policy[[:space:]]*=' \
+  "$repo_root/README.md" || true)
+csp_override_count=$(printf '%s' "$csp_override" | grep -c . || true)
+[ "$csp_override_count" -le 1 ] \
+  || fail "README.md: $csp_override_count content-security-policy override lines, expected at most one"
+
+csp_url=$(printf '%s' "$csp_override" | sed -n 's/.*git[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+csp_pin=$(printf '%s' "$csp_override" | sed -n 's/.*rev[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p')
+
+# A git override with no rev pins a branch, and that branch is rebased — so
+# what a source-expression matcher does would change under `cargo update`.
+[ -z "$csp_url" ] || [ -n "$csp_pin" ] \
+  || fail "README.md: the content-security-policy override names a git source with no rev:
+  $csp_override
+A branch pin changes meaning whenever the fork is rebased. Pin the rev."
+
+if [ -n "$csp_url" ] && [ -n "$csp_pin" ]; then
+  if checkout csp "$csp_url" "$csp_pin" 2> "$work/csp-fetch.err"; then
+    # Cargo accepts a [patch] entry only if the replacement's own version
+    # satisfies the requirement it replaces. Publish a new crate version, let
+    # the lockfile move, and a fork left behind stops resolving — silently in
+    # the manifest, loudly at build time. That is the failure worth catching.
+    pinned=$(awk '/^\[package\]/ { p = 1; next }
+                  p && /^\[/       { exit }
+                  p && /^version/  { gsub(/"/, "", $3); print $3; exit }' \
+             "$work/csp/Cargo.toml")
+    echo "content-security-policy: pinned to ${csp_pin:0:8} on ${csp_url##*/} (crate $pinned)"
+    if [ "$pinned" != "$csp_version" ]; then
+      echo "  Cargo.lock resolves $csp_version, so this pin no longer satisfies it" >&2
+      status=1
+    fi
+  else
+    echo "content-security-policy: FAILED — cannot fetch $csp_pin from $csp_url" >&2
+    sed 's/^/  /' "$work/csp-fetch.err" >&2
+    status=1
+  fi
+  # The fork branch is rebased whenever the crate's master moves — which is
+  # why the override pins a rev rather than a branch — so it is deliberately
+  # not checked against upstream's current tip.
+else
+  csp_rev=$(crate_revision content-security-policy "$csp_version")
+  echo "content-security-policy: $csp_version at ${csp_rev:0:8}"
+  checkout csp "$csp_upstream" "$csp_rev" \
+    || fail "csp: cannot fetch $csp_rev from $csp_upstream — was it force-pushed away?"
+  apply_am_group csp "csp-*.patch"
+fi
 
 # --- stylo: plain diffs, applied with git apply -----------------------------
 
@@ -163,13 +220,17 @@ if [ "$status" -eq 0 ]; then
 else
   cat >&2 <<'EOF'
 
-The series no longer applies. If a dependency bump brought you here, the
-patches need rebasing onto the new revision before that bump can land:
-rebase them on the revision printed above, regenerate with
+The series no longer applies, or an override no longer resolves. If a
+dependency bump brought you here, the patched sources have to move onto the
+new revision before that bump can land:
 
-  git format-patch --zero-commit --no-signature --full-index --numbered
+  .patch files  rebase onto the revision printed above and regenerate with
+                git format-patch --zero-commit --no-signature --full-index --numbered
 
-and update the revisions quoted in README.md's "Using a patched Servo".
+  a fork pin    rebase the fork onto the new upstream, then update the rev
+                in the override
+
+Either way, update the revisions quoted in README.md's "Using a patched Servo".
 EOF
 fi
 exit "$status"

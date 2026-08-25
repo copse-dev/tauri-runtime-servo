@@ -40,7 +40,10 @@ rebase once the pin moves past them.
 CI runs step 2 on every pull request. The `patch series applies` job resolves
 the revisions behind the versions in `Cargo.lock` — each published crate
 records the commit it was cut from in `.cargo_vcs_info.json` — then applies
-all three groups with the commands above. Nothing there is pinned by hand, so
+each group with the commands above. Where a crate's fixes live on a fork
+instead of as `.patch` files here, there is nothing to apply, so the job
+checks the pin itself still resolves to a version the lockfile accepts.
+Nothing there is pinned by hand, so
 a Dependabot bump of `servo` arrives as a red PR when the series no longer
 fits the new tree, which is the point: rebase the series first, and the bump
 goes green. The job applies patches only and never compiles, so it costs a
