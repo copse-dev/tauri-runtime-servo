@@ -26,17 +26,21 @@ jobs:
       - run: cargo fmt --all --check
 
   # The build jobs below compile against *stock* libservo, so nothing else
-  # here exercises servo-patches/. This checks the promise the README's
-  # "Using a patched Servo" section makes: that the series still applies to
-  # the revisions behind the crate versions this repository resolves. It
-  # applies patches only — no compilation — so it costs a couple of minutes.
-  patches:
-    name: patch series applies
+  # here exercises the patched engine. This checks the promise the README's
+  # "Using a patched Servo" section makes: that every override it publishes
+  # still resolves to a version this repository's Cargo.lock accepts. It reads
+  # ten manifests over the API and compiles nothing, so it costs seconds.
+  pins:
+    name: engine pins resolve
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - run: .github/scripts/check-patch-series.sh
+      - run: .github/scripts/check-engine-pins.sh
+        env:
+          # `gh api` reads the forks' manifests; the default token is enough,
+          # they are public.
+          GH_TOKEN: ${{ github.token }}
 
   build:
     strategy:

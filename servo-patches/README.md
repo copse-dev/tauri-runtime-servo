@@ -1,60 +1,54 @@
 # Servo patches
 
 Patches this runtime needs on top of stock Servo, each one a candidate
-upstream PR. This directory is the record; the *applied* form lives on local
-checkouts that consumers wire in with `[patch]` overrides — the crate itself
-always depends on the published libservo release named in `Cargo.toml`.
+upstream PR. This file is the record of *why* each exists; the patches
+themselves live as commits on `tauri-runtime-patches` branches of this
+organisation's forks, which is what builds consume:
 
-The CSP crate is the exception: its two patches live only as commits on a
-fork branch, not as files here, because the `[patch.crates-io]` override
-points straight at that branch and a second copy in this directory could
-only drift from it. Their entries below carry the branch and commit that
-hold them.
+| crate | fork | based on | branch tip |
+| ----- | ---- | -------- | ---------- |
+| servo | [copse-dev/servo](https://github.com/copse-dev/servo) | servo `77fccacc` (`servo 0.5.0`) | `3cb68676` |
+| stylo and its seven siblings | [copse-dev/stylo](https://github.com/copse-dev/stylo) | stylo `67faaab3` (`stylo 0.20.0`) | `4973e76a` |
+| content-security-policy | [copse-dev/rust-content-security-policy](https://github.com/copse-dev/rust-content-security-policy) | upstream `05528760` (`0.8.2`) | `fb5fd0f1` |
 
-The series is authored against servo `f4dde27` (2026-08-02) and stylo
-`2d289c1` (the 0.19 line). Those are **not** the revisions to build against —
-use the ones behind the published versions `Cargo.toml` requires, listed under
-"Using a patched Servo" in the top-level [README](../README.md). The series
-applies cleanly there as of servo `77fccacc` and stylo `67faaab3`; expect to
-rebase once the pin moves past them.
+There are deliberately no `.patch` files here any more. They were a second
+copy of what the branches hold, and a second copy can only drift from the
+first — the CSP pair had already moved to a branch for exactly that reason,
+and the rest have now followed. `git format-patch` regenerates the files at
+any time if a patch needs submitting somewhere that wants one.
 
 ## Workflow
 
-1. Branch each upstream from the revision behind the published version this
-   crate requires — see the top-level [README](../README.md).
-2. Apply each group to its own repository: `0*.patch` to servo with
-   `git am`; `stylo-*.patch` to stylo with `git apply` (those files are
-   plain diffs behind a prose preamble, not `git format-patch` output, so
-   `git am` rejects them). The CSP crate needs no checkout at all.
-3. Build against the result with `[patch.crates-io]` overrides in the
-   *workspace root* — full recipe in the same README section. The CSP
-   override resolves to `copse-dev/rust-content-security-policy`, where
-   `self-tuple-origin` (csp-0001, `e5457bc`) and `self-default-ports`
-   (csp-0002, `72d0d95`) are the PR branches off upstream master
-   (`05528760`, 0.8.2), and `tauri-runtime-patches` (`fb5fd0f`) carries
-   both.
-4. Submit each patch upstream; when one merges, advance the pin past it and
-   delete the file here — or, for the CSP pair, drop the merged commit from
-   the fork branch and move the override's `rev` on.
+1. Consumers need no checkout: the `[patch.crates-io]` overrides in the
+   top-level [README](../README.md) name each branch by `rev`, and cargo
+   fetches it. The full recipe is under "Using a patched Servo" there.
+2. To *work on* a patch, clone the fork, check out
+   `tauri-runtime-patches`, commit, and push. Point the override at your
+   own rev while iterating — the overrides are paths or revs, so a local
+   checkout substitutes cleanly:
+   `servo = { path = "../servo/components/servo" }`.
+3. When the pin has to move, rebase the branch onto the revision behind the
+   new release and update the `rev` in both READMEs.
+4. Submit each commit upstream; when one merges, drop it from the branch and
+   move the `rev` on.
 
-CI runs step 2 on every pull request. The `patch series applies` job resolves
-the revisions behind the versions in `Cargo.lock` — each published crate
-records the commit it was cut from in `.cargo_vcs_info.json` — then applies
-each group with the commands above. Where a crate's fixes live on a fork
-instead of as `.patch` files here, there is nothing to apply, so the job
-checks the pin itself still resolves to a version the lockfile accepts.
-Nothing there is pinned by hand, so
-a Dependabot bump of `servo` arrives as a red PR when the series no longer
-fits the new tree, which is the point: rebase the series first, and the bump
-goes green. The job applies patches only and never compiles, so it costs a
-couple of minutes.
+CI checks the pins rather than the patches. The *engine pins resolve* job in
+[ci.yml](../.github/workflows/ci.yml) fetches every pinned rev on each pull
+request and compares the crate version it carries against the one
+`Cargo.lock` resolves — cargo accepts a `[patch]` entry only if the
+replacement satisfies the requirement it replaces, and that mismatch would
+otherwise surface at build time rather than in the manifest. So a Dependabot
+bump of `servo` arrives as a red pull request until the fork branches are
+rebased onto the new tree, which is the point. The job fetches shallowly and
+compiles nothing, so it costs a couple of minutes;
+[patched-servo.yml](../.github/workflows/patched-servo.yml) is what proves
+the result still builds.
 
 Do **not** point `Cargo.toml`'s `servo` dependency at a fork. crates.io
 accepts registry dependencies only, so a git pin makes this crate
 unpublishable; cargo silently rewrites such a dependency to its `version`
 requirement at package time, which would ship a crate claiming to use the
 fork while actually resolving stock libservo.
-
 ## Landed upstream since the pin
 
 - **CSS Grid now defaults to on** (servo#45621, `76f48dc9e3a`). The
