@@ -1,22 +1,24 @@
 # Builds this crate against a *patched* servo — the one configuration nothing
 # else in CI exercises.
 #
-# ci.yml builds against stock libservo from crates.io, and its "patch series
-# applies" job proves servo-patches/ still applies. Neither compiles the
-# result. This does: it applies the series, adds the `[patch.crates-io]`
-# overrides README.md publishes, and builds with the `patched-servo` feature,
-# whose one job is to set a pref that exists only on a patched tree. A series
-# that applies but no longer carries `layout_svg_native_enabled` fails here
-# and passes everywhere else.
+# ci.yml builds against stock libservo from crates.io, and its "engine pins
+# resolve" job proves every override README.md publishes still names a version
+# the lockfile accepts. Neither compiles the result. This does: it adds the
+# `[patch.crates-io]` overrides README.md publishes and builds with the
+# `patched-servo` feature, whose one job is to set a pref that exists only on
+# the patched tree. A fork branch that resolves but has lost
+# `layout_svg_native_enabled` fails here and passes everywhere else.
 #
-# Linux only, and only on the paths that can invalidate the recipe: the
-# series, what it is applied to (Cargo.lock), and the README block the build
-# is assembled from. A cold run is about a quarter of an hour — comparable to
-# ci.yml's own Linux build, so widening this is cheap if the filter ever looks
-# too narrow. The weekly run catches what the filter cannot — a fork branch
-# that moved, an upstream that force-pushed, a src/ change that outgrew the
-# feature gate. The two path lists are duplicated because the Actions parser
-# has no YAML anchors; keep them in step.
+# Linux only, and only on the paths that can invalidate the recipe: the README
+# block the build is assembled from, and the manifests it is applied to.
+# servo-patches/ is no longer among them — it holds documentation now, not the
+# patches, which live on the fork branches the overrides name. A cold run is
+# about a quarter of an hour — comparable to ci.yml's own Linux build, so
+# widening this is cheap if the filter ever looks too narrow. The weekly run
+# catches what the filter cannot: a fork branch that moved under a rev, an
+# upstream that force-pushed, a src/ change that outgrew the feature gate. The
+# two path lists are duplicated because the Actions parser has no YAML
+# anchors; keep them in step.
 
 name: patched servo
 
@@ -24,7 +26,6 @@ on:
   push:
     branches: [main]
     paths:
-      - servo-patches/**
       - README.md
       - Cargo.toml
       - Cargo.lock
@@ -33,7 +34,6 @@ on:
       - .github/scripts/prepare-patched-servo.sh
   pull_request:
     paths:
-      - servo-patches/**
       - README.md
       - Cargo.toml
       - Cargo.lock
@@ -85,15 +85,16 @@ jobs:
       # pull request depends on to warm a job that runs a few times a month is
       # a bad trade. Every run here builds cold.
 
-      - name: check out the engine crates, apply servo-patches/
+      - name: add the README's engine overrides
         run: .github/scripts/prepare-patched-servo.sh
 
-      # The checkouts land beside a target/ directory that will hold the whole
-      # engine; when this job dies on a full disk, this is the evidence.
+      # Cargo's git cache holds the engine forks and target/ will hold the
+      # whole compiled engine; when this job dies on a full disk, this is the
+      # evidence.
       - name: disk and checkout sizes
         run: |
           df -h /
-          du -sh ../*/
+          du -sh ~/.cargo/git 2>/dev/null || true
 
       - name: build the crate against the patched engine
         run: cargo build --lib --features patched-servo
