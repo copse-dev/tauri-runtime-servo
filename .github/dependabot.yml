@@ -1,0 +1,38 @@
+# Dependency updates.
+#
+# The `servo` bump is the one that matters here: it moves the revision
+# servo-patches/ has to apply to, and CI's "patch series applies" job resolves
+# that revision from Cargo.lock. So a servo update arrives as a PR that is red
+# until the series is rebased onto the new tree — which is the intended
+# signal, not a nuisance. stylo needs no entry of its own: it is resolved
+# transitively through servo, so its version moves in the lockfile alongside.
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Batch the routine upkeep so it does not bury the interesting PR.
+      # servo stays out deliberately: it is 0.x, so even its "minor" bumps
+      # move the engine wholesale, and it needs its own PR for the patch
+      # series check to gate cleanly.
+      cargo-minor-and-patch:
+        exclude-patterns:
+          - servo
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        update-types:
+          - major
+          - minor
+          - patch

@@ -25,6 +25,19 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all --check
 
+  # The build jobs below compile against *stock* libservo, so nothing else
+  # here exercises servo-patches/. This checks the promise the README's
+  # "Using a patched Servo" section makes: that the series still applies to
+  # the revisions behind the crate versions this repository resolves. It
+  # applies patches only — no compilation — so it costs a couple of minutes.
+  patches:
+    name: patch series applies
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - run: .github/scripts/check-patch-series.sh
+
   build:
     strategy:
       fail-fast: false

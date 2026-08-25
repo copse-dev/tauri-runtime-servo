@@ -26,6 +26,15 @@ rebase once the pin moves past them.
 4. Submit each patch upstream; when one merges, advance the pin past it and
    delete the file here.
 
+CI runs step 2 on every pull request. The `patch series applies` job resolves
+the revisions behind the versions in `Cargo.lock` — each published crate
+records the commit it was cut from in `.cargo_vcs_info.json` — then applies
+all three groups with the commands above. Nothing there is pinned by hand, so
+a Dependabot bump of `servo` arrives as a red PR when the series no longer
+fits the new tree, which is the point: rebase the series first, and the bump
+goes green. The job applies patches only and never compiles, so it costs a
+couple of minutes.
+
 Do **not** point `Cargo.toml`'s `servo` dependency at a fork. crates.io
 accepts registry dependencies only, so a git pin makes this crate
 unpublishable; cargo silently rewrites such a dependency to its `version`
