@@ -68,6 +68,12 @@ log = "0.4.21"
 softbuffer = { version = "0.4", default-features = false }
 once_cell = "1.20"
 
+# Pinned to whatever tauri-runtime resolves, not to the newest release: its
+# WindowBuilder trait takes windows::Win32::Foundation::HWND in owner() and
+# parent(), and a second, semver-incompatible `windows` in the graph makes
+# that a different type from the one this crate's impl uses. tauri-runtime
+# 2.11.3 requires ^0.61; .github/dependabot.yml keeps bumps off it for the
+# same reason.
 [target."cfg(windows)".dependencies.windows]
 version = "0.61"
 features = [

@@ -25,6 +25,19 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # `windows` is not ours to pick. tauri-runtime's WindowBuilder trait
+      # takes windows::Win32::Foundation::HWND in owner() and parent(), so
+      # our copy has to be the crate version tauri-runtime resolves: two
+      # semver-incompatible `windows` in the graph are two distinct HWND
+      # types, and the impl stops matching the trait (E0053). tauri-runtime
+      # 2.11.3 requires ^0.61, so 0.61.x is the whole usable range, and the
+      # move to 0.62 arrives as a tauri-runtime bump rather than this one.
+      # Patch updates inside 0.61 still unify, so those are left open.
+      - dependency-name: windows
+        update-types:
+          - version-update:semver-minor
+          - version-update:semver-major
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -36,3 +49,13 @@ updates:
           - major
           - minor
           - patch
+    ignore:
+      # dtolnay/rust-toolchain's refs are Rust versions rather than releases
+      # of the action, and the repository carries branches for versions that
+      # rustup cannot install yet — 1.99.0 and 1.100.0 are both there while
+      # stable is 1.98.0 — so the numerically highest ref is a 404 from
+      # static.rust-lang.org. Which toolchain CI installs is settled by
+      # rust-toolchain.toml anyway, and the action takes the version at the
+      # call site rather than from that file, so the two are moved together
+      # by hand — see the note there.
+      - dependency-name: dtolnay/rust-toolchain
