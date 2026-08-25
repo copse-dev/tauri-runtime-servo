@@ -220,13 +220,17 @@ if [ "$status" -eq 0 ]; then
 else
   cat >&2 <<'EOF'
 
-The series no longer applies. If a dependency bump brought you here, the
-patches need rebasing onto the new revision before that bump can land:
-rebase them on the revision printed above, regenerate with
+The series no longer applies, or an override no longer resolves. If a
+dependency bump brought you here, the patched sources have to move onto the
+new revision before that bump can land:
 
-  git format-patch --zero-commit --no-signature --full-index --numbered
+  .patch files  rebase onto the revision printed above and regenerate with
+                git format-patch --zero-commit --no-signature --full-index --numbered
 
-and update the revisions quoted in README.md's "Using a patched Servo".
+  a fork pin    rebase the fork onto the new upstream, then update the rev
+                in the override
+
+Either way, update the revisions quoted in README.md's "Using a patched Servo".
 EOF
 fi
 exit "$status"
