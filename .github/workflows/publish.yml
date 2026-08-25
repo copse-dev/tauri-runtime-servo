@@ -40,7 +40,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Servo's repository contains WPT test paths longer than Windows'
       # legacy MAX_PATH; see the note in ci.yml.
@@ -86,7 +86,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: install Rust
         uses: dtolnay/rust-toolchain@1.95.0
