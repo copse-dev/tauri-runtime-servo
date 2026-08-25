@@ -1,0 +1,104 @@
+# Builds this crate against a *patched* servo — the one configuration nothing
+# else in CI exercises.
+#
+# ci.yml builds against stock libservo from crates.io, and its "patch series
+# applies" job proves servo-patches/ still applies. Neither compiles the
+# result. This does: it applies the series, adds the `[patch.crates-io]`
+# overrides README.md publishes, and builds with the `patched-servo` feature,
+# whose one job is to set a pref that exists only on a patched tree. A series
+# that applies but no longer carries `layout_svg_native_enabled` fails here
+# and passes everywhere else.
+#
+# Linux only, and only on the paths that can invalidate the recipe: the
+# series, what it is applied to (Cargo.lock), and the README block the build
+# is assembled from. A cold run is about a quarter of an hour — comparable to
+# ci.yml's own Linux build, so widening this is cheap if the filter ever looks
+# too narrow. The weekly run catches what the filter cannot — a fork branch
+# that moved, an upstream that force-pushed, a src/ change that outgrew the
+# feature gate. The two path lists are duplicated because the Actions parser
+# has no YAML anchors; keep them in step.
+
+name: patched servo
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - servo-patches/**
+      - README.md
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/patched-servo.yml
+      - .github/scripts/prepare-patched-servo.sh
+  pull_request:
+    paths:
+      - servo-patches/**
+      - README.md
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .github/workflows/patched-servo.yml
+      - .github/scripts/prepare-patched-servo.sh
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here writes anything back; the scheduled run in particular has no
+# business holding a token that could.
+permissions:
+  contents: read
+
+env:
+  # Servo's debug artifacts are enormous; hosted runners have neither the
+  # disk nor the time for full debuginfo, and this check doesn't need it.
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_DEV_INCREMENTAL: false
+
+jobs:
+  build:
+    name: build against a patched servo
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same set ci.yml installs — the patched graph is the stock graph
+      # with the series applied, so it needs nothing extra.
+      - name: install Servo build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev libegl1-mesa-dev libfontconfig1-dev libfreetype6-dev libgtk-3-dev libharfbuzz-dev libwebkit2gtk-4.1-dev libx11-dev libxkbcommon-x11-dev lld
+          echo "RUSTFLAGS=-C link-arg=-fuse-ld=lld" >> "$GITHUB_ENV"
+
+      - name: install Rust
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      # No Swatinem/rust-cache step here, on purpose: it would add a fourth
+      # multi-gigabyte entry to a 10 GB repository cache budget already
+      # carrying one per platform from ci.yml, and evicting the caches every
+      # pull request depends on to warm a job that runs a few times a month is
+      # a bad trade. Every run here builds cold.
+
+      - name: check out the engine crates, apply servo-patches/
+        run: .github/scripts/prepare-patched-servo.sh
+
+      # The checkouts land beside a target/ directory that will hold the whole
+      # engine; when this job dies on a full disk, this is the evidence.
+      - name: disk and checkout sizes
+        run: |
+          df -h /
+          du -sh ../*/
+
+      - name: build the crate against the patched engine
+        run: cargo build --lib --features patched-servo
+
+      # The step above produces an rlib, which is never linked. Building the
+      # example links the patched engine into an actual binary.
+      - name: build the helloworld example against the patched engine
+        run: cargo build -p helloworld-servo --features tauri-runtime-servo/patched-servo
