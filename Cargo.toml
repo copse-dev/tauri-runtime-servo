@@ -42,7 +42,7 @@ targets = [
 # compiles against the stable `primeorder 0.14.0` its caret requirement now
 # resolves to. 0.5.0 dropped those pre-release pins.
 servo = "0.5"
-tao = { version = "0.36", default-features = false, features = ["rwh_06"] }
+tao = { version = "0.37", default-features = false, features = ["rwh_06"] }
 tauri-runtime = "2.11.3"
 tauri-utils = "2.9.3"
 raw-window-handle = "0.6"
