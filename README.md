@@ -124,19 +124,19 @@ git -C servo checkout -b tauri-runtime-patches 77fccacc1f1fdce10498d50173aafaa09
 
 git clone https://github.com/servo/stylo
 git -C stylo checkout -b tauri-runtime-patches 67faaab3ff7aa66780ec1d0f51ca47e177b812d3
-
-git clone https://github.com/rust-ammonia/rust-content-security-policy
 ```
+
+The CSP crate needs no checkout: its override in step 3 points straight at a
+fork branch that already carries its two patches.
 
 ### 2. Apply the series
 
-The servo and csp files are `git format-patch` output. The stylo files are
-plain diffs with a prose preamble, so `git am` rejects them — apply those
-with `git apply`:
+The servo files are `git format-patch` output. The stylo files are plain
+diffs with a prose preamble, so `git am` rejects them — apply those with
+`git apply`:
 
 ```bash
 git -C servo am ../tauri-runtime-servo/servo-patches/0*.patch
-git -C rust-content-security-policy am ../tauri-runtime-servo/servo-patches/csp-*.patch
 
 for p in ../tauri-runtime-servo/servo-patches/stylo-*.patch; do
   git -C stylo apply --3way "$p"
@@ -144,9 +144,12 @@ done
 ```
 
 The series is authored against servo `f4dde27` and stylo `2d289c1` (the 0.19
-line), but applies cleanly to the revisions above — 24/24, 5/5 and 1/1 with
-no conflicts, verified against servo `77fccacc` and stylo `67faaab3`. Expect
-that to need rebasing once the pin moves further.
+line), but applies cleanly to the revisions above — 24/24 and 5/5 with no
+conflicts, verified against servo `77fccacc` and stylo `67faaab3`. Expect
+that to need rebasing once the pin moves further. The CSP crate's two
+patches are not files here at all — they are commits on the fork branch the
+override below names, described in
+[servo-patches/README.md](servo-patches/README.md).
 
 ### 3. Add the overrides to your workspace root
 
@@ -157,7 +160,7 @@ override.
 ```toml
 [patch.crates-io]
 servo = { path = "../servo/components/servo" }
-content-security-policy = { path = "../rust-content-security-policy" }
+content-security-policy = { git = "https://github.com/copse-dev/rust-content-security-policy", rev = "fb5fd0f1af7f0c0dc315bf938507290b2e48cdbe" }
 
 # All eight stylo entries are required. Overriding `stylo` alone leaves the
 # others resolving from the registry, which puts a second copy of
@@ -174,6 +177,11 @@ stylo_traits = { path = "../stylo/style_traits" }
 
 `stylo_derive`, `to_shmem`, and `to_shmem_derive` need no entries — the
 patched crates reach them by path.
+
+The CSP entry is pinned by `rev` rather than by `branch = "tauri-runtime-patches"`
+on purpose: that branch is rebased whenever the crate's upstream master moves,
+and a branch pin would change what a CSP matcher does under you on the next
+`cargo update`. The branch tip and the rev are the same commit today.
 
 ### 4. Enable the feature
 

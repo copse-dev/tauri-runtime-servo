@@ -5,6 +5,12 @@ upstream PR. This directory is the record; the *applied* form lives on local
 checkouts that consumers wire in with `[patch]` overrides — the crate itself
 always depends on the published libservo release named in `Cargo.toml`.
 
+The CSP crate is the exception: its two patches live only as commits on a
+fork branch, not as files here, because the `[patch.crates-io]` override
+points straight at that branch and a second copy in this directory could
+only drift from it. Their entries below carry the branch and commit that
+hold them.
+
 The series is authored against servo `f4dde27` (2026-08-02) and stylo
 `2d289c1` (the 0.19 line). Those are **not** the revisions to build against —
 use the ones behind the published versions `Cargo.toml` requires, listed under
@@ -16,15 +22,20 @@ rebase once the pin moves past them.
 
 1. Branch each upstream from the revision behind the published version this
    crate requires — see the top-level [README](../README.md).
-2. Apply each group to its own repository: `0*.patch` to servo and
-   `csp-*.patch` to rust-content-security-policy with `git am`;
-   `stylo-*.patch` to stylo with `git apply` (those files are plain diffs
-   behind a prose preamble, not `git format-patch` output, so `git am`
-   rejects them).
+2. Apply each group to its own repository: `0*.patch` to servo with
+   `git am`; `stylo-*.patch` to stylo with `git apply` (those files are
+   plain diffs behind a prose preamble, not `git format-patch` output, so
+   `git am` rejects them). The CSP crate needs no checkout at all.
 3. Build against the result with `[patch.crates-io]` overrides in the
-   *workspace root* — full recipe in the same README section.
+   *workspace root* — full recipe in the same README section. The CSP
+   override resolves to `copse-dev/rust-content-security-policy`, where
+   `self-tuple-origin` (csp-0001, `e5457bc`) and `self-default-ports`
+   (csp-0002, `72d0d95`) are the PR branches off upstream master
+   (`05528760`, 0.8.2), and `tauri-runtime-patches` (`fb5fd0f`) carries
+   both.
 4. Submit each patch upstream; when one merges, advance the pin past it and
-   delete the file here.
+   delete the file here — or, for the CSP pair, drop the merged commit from
+   the fork branch and move the override's `rev` on.
 
 CI runs step 2 on every pull request. The `patch series applies` job resolves
 the revisions behind the versions in `Cargo.lock` — each published crate
@@ -511,8 +522,60 @@ fork while actually resolving stock libservo.
   scheme — so `'self'` could never match, and the fallback branch only
   admits http(s)/ws(s) upgrades. Adds component comparison (equal
   scheme/host, ports equal or absent on both sides) when the user agent
-  supplies a tuple origin, which 0008 makes Servo do. Applies to
-  `rust-ammonia/rust-content-security-policy` at the published 0.8.1 rev
-  (`6a523bab`), consumed via a `[patch.crates-io]` section. Special
-  schemes are unaffected (same-scheme matches were already taken by the
-  fast path).
+  supplies a tuple origin, which 0008 makes Servo do. Lives as commit
+  `e5457bc` on branch `self-tuple-origin` of
+  `copse-dev/rust-content-security-policy`, off upstream master
+  (`05528760`, 0.8.2). Ships `tests/self-tuple-origin.rs`; the crate's own
+  suite (79 tests) stays green and `cargo fmt --check` is clean.
+
+  Written vendor-neutrally for upstream: the patch and its tests speak of
+  a scheme the user agent has registered itself, use `custom://` in
+  examples, and cite `chrome-extension://` / `moz-extension://` as the
+  shipping precedent. `tauri://` appears nowhere in it — the argument is
+  stronger without it, since `script-src 'self'` already works on
+  extension pages in both engines for exactly this reason.
+
+  **Same scheme only, deliberately.** The new branch is self-contained
+  rather than a relaxation of the existing port condition: an earlier
+  draft OR-ed "no port on either side" into the port gate the http →
+  https/wss *upgrade* allowance also depends on, which let `'self'` in a
+  `tauri://localhost` document match `https://localhost/` and
+  `wss://localhost/` (verified: `Allowed` under that draft, `Blocked`
+  now). A custom scheme gets no upgrade allowance — the http → https one
+  exists for the http/https migration and means nothing for `tauri://`.
+  Special schemes are unaffected either way: the new branch requires
+  `default_port(scheme).is_none()`, and a same-scheme match there was
+  already taken by the origin-equality fast path.
+
+  *Which schemes may do this is the UA's call, not the crate's*: the
+  crate honours whatever tuple origin it is handed, and 0008 mints tuple
+  origins only for schemes the embedder registered as secure
+  (`is_embedder_secure_scheme`). Keeping the secure-scheme list out of
+  the CSP crate avoids a second source of truth for a decision Chromium
+  and WebKit also make in the URL/security layer.
+
+- **csp-0002 — compare effective ports, and each scheme's own default,
+  for `'self'` (rust-content-security-policy repo, out of series).**
+  Found while testing csp-0001, unrelated to custom schemes, and
+  independent of it — either can land first. CSP3 lets `'self'` match
+  when the origin's and the URL's ports "are either the same or the
+  default ports for their respective schemes", and neither half worked on
+  default ports: rust-url reports `Url::port()` as `None` for a scheme's
+  default port, so comparing it against `default_port(..)` (`Some(80)`,
+  `Some(443)`) could never be true, and the same comparison judged the
+  URL's default port by the *protected resource's* scheme rather than the
+  URL's own. So `'self'` upgraded only on explicit non-default ports:
+  `https://example.com` under `connect-src 'self'` could not open a
+  socket to `wss://example.com/socket`. Compares
+  `port_or_known_default()` against each scheme's own default instead.
+  Ships `tests/self-default-ports.rs` (5 tests). The existing WPT for
+  this,
+  `content-security-policy/connect-src/connect-src-websocket-self.sub.html`,
+  exercises exactly that pair but over the test server's non-default
+  ports (`{{location[port]}}`), where the broken comparison happens to
+  give the right answer — so no WPT run catches it.
+
+  Lives as commit `72d0d95` on branch `self-default-ports`, off the same
+  upstream master. `tauri-runtime-patches` (`fb5fd0f`) carries it on top of
+  csp-0001; the crate's own suite (79 tests) plus both new test files are
+  green there, and `cargo fmt --check` is clean.
