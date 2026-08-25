@@ -194,6 +194,23 @@ tauri-runtime-servo = { version = "0.1", features = ["patched-servo"] }
 (`layout_svg_native_enabled`, added by patch 0009). Without all four steps
 the crate builds and runs against stock Servo.
 
+### What CI checks
+
+The claims above are checked rather than remembered. The *patch series
+applies* job in [`ci.yml`](.github/workflows/ci.yml) re-applies the series on
+every pull request, to whatever revisions the current `Cargo.lock` implies —
+so a dependency bump that outruns the patches fails there.
+
+[`patched-servo.yml`](.github/workflows/patched-servo.yml) goes the rest of
+the way on Linux: it follows all four steps, lifting the override block
+straight out of step 3 rather than restating it, and builds the result with
+`patched-servo` enabled. That build is the only thing proving the patched
+tree still compiles and still carries `layout_svg_native_enabled` — a series
+that applies cleanly but has lost the pref passes every other job. It runs
+when the series, the manifests, or this section change, plus weekly and on
+demand; a cold build of the patched engine runs in about a quarter of an
+hour.
+
 ### When the pin moves
 
 Whenever this crate's `servo` requirement changes, the checkout revisions
