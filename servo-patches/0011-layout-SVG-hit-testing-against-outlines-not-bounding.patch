@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 16:16:35 +0100
-Subject: [PATCH 11/17] layout: SVG hit testing against outlines, not bounding
+Subject: [PATCH 11/24] layout: SVG hit testing against outlines, not bounding
  boxes
 
 Point-in-shape testing for the native path: fill regions honour
@@ -31,7 +31,7 @@ wrong answer.
 
 diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
 new file mode 100644
-index 00000000000..7e9900e6654
+index 0000000000000000000000000000000000000000..7e9900e66543179c3f387bc5f0ee7a9536b553dd
 --- /dev/null
 +++ b/components/layout/svg/hittest.rs
 @@ -0,0 +1,346 @@
@@ -382,7 +382,7 @@ index 00000000000..7e9900e6654
 +    }
 +}
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index ddd25b9d00d..c0b822b8337 100644
+index ddd25b9d00d50e60cd7d5dc058eee9b697189d32..c0b822b833756104d1ca12678563a6e72d12db63 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -26,6 +26,7 @@ use euclid::default::{Size2D, Transform2D};

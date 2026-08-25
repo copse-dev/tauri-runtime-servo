@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sun, 23 Aug 2026 00:21:02 +0100
-Subject: [PATCH 22/23] layout: lay out and paint <foreignObject> content
+Subject: [PATCH 22/24] layout: lay out and paint <foreignObject> content
 
 The inverse hinge, open. HTML inside a natively rendered SVG now goes
 through real CSS layout and paints through the display list, above the
@@ -66,7 +66,7 @@ against the pref-off baseline, no crashes.
  create mode 100644 components/layout/svg/foreign.rs
 
 diff --git a/components/layout/display_list/paint_traversal.rs b/components/layout/display_list/paint_traversal.rs
-index 14fd2ea9d0f..6071738bb91 100644
+index 14fd2ea9d0f10b7ddd41c8c4f48f3221fa72f75f..6071738bb91ff39dbf7b4e8b3202242694272f98 100644
 --- a/components/layout/display_list/paint_traversal.rs
 +++ b/components/layout/display_list/paint_traversal.rs
 @@ -450,6 +450,17 @@ impl<'a, Handler: PaintTraversalHandler> PaintTraversal<'a, Handler> {
@@ -106,7 +106,7 @@ index 14fd2ea9d0f..6071738bb91 100644
              }
          }
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 901f06a8e34..4420c85bc12 100644
+index 901f06a8e3432fd90fbd0e1eca0e2faf5b87073a..4420c85bc126c320377efab2a1fa477762279449 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -46,7 +46,8 @@ use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBox
@@ -130,7 +130,7 @@ index 901f06a8e34..4420c85bc12 100644
              ReplacedContentKind::SVGElement {
 diff --git a/components/layout/svg/foreign.rs b/components/layout/svg/foreign.rs
 new file mode 100644
-index 00000000000..a6908b36aa2
+index 0000000000000000000000000000000000000000..a6908b36aa2c3728c40966b57a0a52d3545bf94a
 --- /dev/null
 +++ b/components/layout/svg/foreign.rs
 @@ -0,0 +1,151 @@
@@ -286,7 +286,7 @@ index 00000000000..a6908b36aa2
 +    )
 +}
 diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
-index d569f256b7e..f2542e84922 100644
+index dac5d60a8fd06d00d4dcd640d891dee473725059..b2d5fb547042dc7dbc164293169996a878fe0f52 100644
 --- a/components/layout/svg/integration.rs
 +++ b/components/layout/svg/integration.rs
 @@ -18,12 +18,32 @@ use webrender_api::units::DeviceIntSize;
@@ -512,7 +512,7 @@ index d569f256b7e..f2542e84922 100644
  }
  
  /// Whether `node` is painted by an enclosing native SVG viewport.
-@@ -222,27 +356,7 @@ unsafe fn bounds_of(
+@@ -219,27 +353,7 @@ unsafe fn bounds_of(
      // not as a measurement of the content inside it, so this is the spec
      // answer rather than a placeholder for one.
      if *name == local_name!("foreignObject") {
@@ -542,7 +542,7 @@ index d569f256b7e..f2542e84922 100644
      if *name == local_name!("text") || *name == local_name!("tspan") {
          let measured = super::text::measure(node, element, &style, font_context, basis)?;
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index 242979f7b08..7e0c26e3ed1 100644
+index 242979f7b0839e2e8de06d50e9eea6cba1ee8755..7e0c26e3ed1af4648fc72330a2657efe5bdb9458 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -25,6 +25,7 @@
@@ -565,7 +565,7 @@ index 242979f7b08..7e0c26e3ed1 100644
 -    pub viewport: SVGViewport,
 -}
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
-index a2f37377325..feb50fdd031 100644
+index a2f37377325ba164a541f3582aa96a8615c57f89..feb50fdd031be69b84ec93e26a47363125b239c7 100644
 --- a/components/layout/svg/resolve.rs
 +++ b/components/layout/svg/resolve.rs
 @@ -505,3 +505,18 @@ pub(crate) enum ClipResolution {

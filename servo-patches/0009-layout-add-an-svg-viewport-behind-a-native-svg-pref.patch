@@ -1,7 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 15:16:38 +0100
-Subject: [PATCH] layout: add an SVG viewport behind layout.svg.native.enabled
+Subject: [PATCH 09/24] layout: add an SVG viewport behind
+ layout.svg.native.enabled
 
 First step of native SVG layout. Inline <svg> is currently XML-serialized
 to a data: URL and rasterized by the image cache, so nothing inside it is
@@ -46,7 +47,7 @@ Seam: 21 added lines across pre-existing files, no deletions.
  create mode 100644 components/layout/svg/viewbox.rs
 
 diff --git a/components/config/prefs.rs b/components/config/prefs.rs
-index 9c1ff9469c1..489178a8a3b 100644
+index 9c1ff9469c17eb0e501458e0303c0179ee58136a..489178a8a3bf468a23cc03fb03787543b2e1c2d5 100644
 --- a/components/config/prefs.rs
 +++ b/components/config/prefs.rs
 @@ -320,6 +320,10 @@ pub struct Preferences {
@@ -69,7 +70,7 @@ index 9c1ff9469c1..489178a8a3b 100644
              layout_threads: 3,
              layout_parallelism_job_count_minimum: 4,
 diff --git a/components/layout/lib.rs b/components/layout/lib.rs
-index 1a066e4cd58..9c02d33382b 100644
+index 1a066e4cd5825d4b19a7c7c8ad394a81cbdc5aa1..9c02d33382bfa0d73bf34ff8cb4aa2505e0513d1 100644
 --- a/components/layout/lib.rs
 +++ b/components/layout/lib.rs
 @@ -31,6 +31,7 @@ mod quotes;
@@ -81,7 +82,7 @@ index 1a066e4cd58..9c02d33382b 100644
  mod traversal;
  
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 66859f743f2..ffa6ce767b0 100644
+index 66859f743f20f6e68efbca7eaa4a666061f6e2cc..ffa6ce767b0566ce505c19bc9e063fb28166cc73 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -46,6 +46,7 @@ use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBox
@@ -114,7 +115,7 @@ index 66859f743f2..ffa6ce767b0 100644
  
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
 new file mode 100644
-index 00000000000..87f5a6317b1
+index 0000000000000000000000000000000000000000..87f5a6317b172a38e7521c5a8979ee92a075433c
 --- /dev/null
 +++ b/components/layout/svg/mod.rs
 @@ -0,0 +1,169 @@
@@ -289,7 +290,7 @@ index 00000000000..87f5a6317b1
 +}
 diff --git a/components/layout/svg/viewbox.rs b/components/layout/svg/viewbox.rs
 new file mode 100644
-index 00000000000..d940a11267d
+index 0000000000000000000000000000000000000000..d940a11267d03302319fc174fba461ca5a9176ac
 --- /dev/null
 +++ b/components/layout/svg/viewbox.rs
 @@ -0,0 +1,344 @@
@@ -638,7 +639,7 @@ index 00000000000..d940a11267d
 +    }
 +}
 diff --git a/components/script/dom/svg/svgsvgelement.rs b/components/script/dom/svg/svgsvgelement.rs
-index 5f38f8351ea..dfea562b40b 100644
+index 5f38f8351ea58206181935f3a6a63a162f4b2c6a..dfea562b40b6dc5935f799427121d0be2a32ef0c 100644
 --- a/components/script/dom/svg/svgsvgelement.rs
 +++ b/components/script/dom/svg/svgsvgelement.rs
 @@ -211,6 +211,8 @@ impl<'dom> LayoutDom<'dom, SVGSVGElement> {
@@ -659,7 +660,7 @@ index 5f38f8351ea..dfea562b40b 100644
          }
      }
 diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
-index e82d369e539..d4960578b61 100644
+index e82d369e5394bd45a40b5ed9629ae3a461906c03..d4960578b612e52c2f07426bd5d2ff4935c5f214 100644
 --- a/components/shared/layout/lib.rs
 +++ b/components/shared/layout/lib.rs
 @@ -166,6 +166,7 @@ pub struct SVGElementData<'dom> {
@@ -671,7 +672,7 @@ index e82d369e539..d4960578b61 100644
  
  impl SVGElementData<'_> {
 diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
-index d82e3c6229b..3441f2603f6 100644
+index d82e3c6229b44c5f224e2fb6610c3b5924761e7f..3441f2603f69c4005e23b23c8bd2c8b81060ba1c 100644
 --- a/ports/servoshell/prefs.rs
 +++ b/ports/servoshell/prefs.rs
 @@ -52,6 +52,7 @@ pub(crate) static EXPERIMENTAL_PREFS: &[&str] = &[

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 18:22:12 +0100
-Subject: [PATCH 14/17] layout: honor transform-origin, and fix viewBox's
+Subject: [PATCH 14/24] layout: honor transform-origin, and fix viewBox's
  intrinsic ratio
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
@@ -63,7 +63,7 @@ regressions are the reliable part.
  create mode 100644 components/shared/layout/svg_number.rs
 
 diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
-index df60ec06d8c..45eb3b853f1 100644
+index df60ec06d8c2117f12504353c698564b3f8a5a9f..45eb3b853f1bc85a4525a043ba077a0450d37dd6 100644
 --- a/components/layout/layout_impl.rs
 +++ b/components/layout/layout_impl.rs
 @@ -352,7 +352,7 @@ impl Layout for LayoutThread {
@@ -76,7 +76,7 @@ index df60ec06d8c..45eb3b853f1 100644
                  },
                  rendering_type => rendering_type,
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index 24e4b67d6b0..53298f785bc 100644
+index 24e4b67d6b080510878e08d4d252e739cd3a7b3d..53298f785bcf62d17768c078edfbaa4d9e1b2671 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -349,7 +349,7 @@ impl ReplacedContents {
@@ -99,7 +99,7 @@ index 24e4b67d6b0..53298f785bc 100644
                  let Some(vector_image) = vector_image else {
 diff --git a/components/layout/svg/integration.rs b/components/layout/svg/integration.rs
 new file mode 100644
-index 00000000000..53f793ab3db
+index 0000000000000000000000000000000000000000..53f793ab3db771f757cf541706c3ccab69cd57b5
 --- /dev/null
 +++ b/components/layout/svg/integration.rs
 @@ -0,0 +1,151 @@
@@ -255,7 +255,7 @@ index 00000000000..53f793ab3db
 +    NodeRenderingType::NotRendered
 +}
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index 34a7cbe7155..e1e57090aea 100644
+index 34a7cbe71558cf5c58e07fc3f726083288652b2f..e1e57090aeab0e1c2b4a4425b8663f837e23142b 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -22,20 +22,12 @@
@@ -413,7 +413,7 @@ index 34a7cbe7155..e1e57090aea 100644
 -    NodeRenderingType::NotRendered
 -}
 diff --git a/components/layout/svg/number.rs b/components/layout/svg/number.rs
-index c6c0170c999..055a40d9dc8 100644
+index c6c0170c9992a2e1df32be1e0bb146fd66ea4532..055a40d9dc883cfca0aa18668c439aea30dcc439 100644
 --- a/components/layout/svg/number.rs
 +++ b/components/layout/svg/number.rs
 @@ -2,113 +2,10 @@
@@ -536,7 +536,7 @@ index c6c0170c999..055a40d9dc8 100644
 -}
 +pub(crate) use layout_api::svg_number::NumberListParser;
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
-index 30d11b97af9..97620009598 100644
+index 30d11b97af94bdf89c137b0b609a8b9f3fa7050a..97620009598b6a44fc6c8b24359ed6633ed1fc1c 100644
 --- a/components/layout/svg/resolve.rs
 +++ b/components/layout/svg/resolve.rs
 @@ -101,8 +101,13 @@ pub(crate) fn shape(
@@ -587,7 +587,7 @@ index 30d11b97af9..97620009598 100644
          .attribute_as_str(&ns!(), &local_name!("transform"))
          .and_then(parse_transform_list)
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index ba3ad6dba8d..98e3be730d0 100644
+index ba3ad6dba8d78b307131a7486923b370f33f0842..98e3be730d0c419e784e742d05312c3d3b928939 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -102,7 +102,7 @@ fn build_node(
@@ -600,7 +600,7 @@ index ba3ad6dba8d..98e3be730d0 100644
      // A group with zero opacity, and everything under it, is invisible.
      if opacity == 0. {
 diff --git a/components/shared/layout/lib.rs b/components/shared/layout/lib.rs
-index d4960578b61..5cfe3303ec7 100644
+index d4960578b612e52c2f07426bd5d2ff4935c5f214..5cfe3303ec7a63693d0711dd7df328644bb8a6b8 100644
 --- a/components/shared/layout/lib.rs
 +++ b/components/shared/layout/lib.rs
 @@ -13,6 +13,9 @@ mod layout_dom;
@@ -673,7 +673,7 @@ index d4960578b61..5cfe3303ec7 100644
  
 diff --git a/components/shared/layout/svg_number.rs b/components/shared/layout/svg_number.rs
 new file mode 100644
-index 00000000000..9f6595ea87b
+index 0000000000000000000000000000000000000000..9f6595ea87b310642731e43b0705ff93de48d77b
 --- /dev/null
 +++ b/components/shared/layout/svg_number.rs
 @@ -0,0 +1,117 @@

@@ -1,8 +1,8 @@
-From 2b16fb2be54db3cef5f98d4576f8a85bc7f888a8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 21 Aug 2026 18:26:33 +0000
-Subject: [PATCH] script: fall back to generic sans-serif for SVG text font
- resolution
+Subject: [PATCH 07/24] script: fall back to generic sans-serif for SVG text
+ font resolution
 
 The rasterizer substitutes fonts per-glyph only after a base font
 resolves for a text span; when the embedder's FontResolver returns None
@@ -17,7 +17,7 @@ sans-serif before giving up.
  1 file changed, 38 insertions(+), 21 deletions(-)
 
 diff --git a/components/script/svg_font.rs b/components/script/svg_font.rs
-index 88f9ee0052..ced43cc8cf 100644
+index 88f9ee0052d4ec445cf3085f1f5222586be4a4bb..ced43cc8cf59694ebb9fea691012c0581b657676 100644
 --- a/components/script/svg_font.rs
 +++ b/components/script/svg_font.rs
 @@ -76,35 +76,52 @@ fn convert_font_family(family: &FontFamily) -> SingleFontFamily {
@@ -94,6 +94,3 @@ index 88f9ee0052..ced43cc8cf 100644
 +        )
      }
  }
--- 
-2.43.0
-

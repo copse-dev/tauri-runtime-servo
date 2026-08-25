@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 17:56:45 +0100
-Subject: [PATCH 13/17] layout: paint native SVG, and let its descendants
+Subject: [PATCH 13/24] layout: paint native SVG, and let its descendants
  animate
 
 Connects the renderer to the compositor and makes CSS animations run on
@@ -77,7 +77,7 @@ Seam: 47 added lines across pre-existing layout and script files.
  create mode 100644 components/layout/stylesheets/svg-rasterized.css
 
 diff --git a/components/layout/context.rs b/components/layout/context.rs
-index 22b255c32ca..6d207165672 100644
+index 22b255c32ca1b6c960c540fa432a673eb63e258b..6d2071656729d70a32b7cda95f01915986adfac6 100644
 --- a/components/layout/context.rs
 +++ b/components/layout/context.rs
 @@ -29,6 +29,8 @@ use style_traits::DevicePixel;
@@ -111,7 +111,7 @@ index 22b255c32ca..6d207165672 100644
      }
  }
 diff --git a/components/layout/layout_impl.rs b/components/layout/layout_impl.rs
-index 96ba4ec64ec..df60ec06d8c 100644
+index 96ba4ec64ec4456fc04954219a9cff8d436a7e0f..df60ec06d8c2117f12504353c698564b3f8a5a9f 100644
 --- a/components/layout/layout_impl.rs
 +++ b/components/layout/layout_impl.rs
 @@ -82,6 +82,7 @@ use webrender_api::ExternalScrollId;
@@ -219,7 +219,7 @@ index 96ba4ec64ec..df60ec06d8c 100644
                  let html_mode_stylesheet =
                      parse_ua_stylesheet(shared_lock, "html-mode.css", HTML_MODE_CSS);
 diff --git a/components/layout/replaced.rs b/components/layout/replaced.rs
-index ffa6ce767b0..24e4b67d6b0 100644
+index ffa6ce767b0566ce505c19bc9e063fb28166cc73..24e4b67d6b080510878e08d4d252e739cd3a7b3d 100644
 --- a/components/layout/replaced.rs
 +++ b/components/layout/replaced.rs
 @@ -46,7 +46,7 @@ use crate::layout_box_base::{IndependentFormattingContextLayoutResult, LayoutBox
@@ -268,7 +268,7 @@ index ffa6ce767b0..24e4b67d6b0 100644
                      return vec![];
                  };
 diff --git a/components/layout/stylesheets/servo.css b/components/layout/stylesheets/servo.css
-index c6aac089058..2b6df4588a1 100644
+index c6aac0890585778f01adcc4437b338ab8047d2e1..2b6df4588a1af1a2d33b191550d4a024230593a6 100644
 --- a/components/layout/stylesheets/servo.css
 +++ b/components/layout/stylesheets/servo.css
 @@ -428,15 +428,6 @@ details[open]::details-content {
@@ -289,7 +289,7 @@ index c6aac089058..2b6df4588a1 100644
    direction: inherit;
 diff --git a/components/layout/stylesheets/svg-rasterized.css b/components/layout/stylesheets/svg-rasterized.css
 new file mode 100644
-index 00000000000..30e2a5b21b0
+index 0000000000000000000000000000000000000000..30e2a5b21b022b2775c7cab296c1200c4eb3e320
 --- /dev/null
 +++ b/components/layout/stylesheets/svg-rasterized.css
 @@ -0,0 +1,23 @@
@@ -317,7 +317,7 @@ index 00000000000..30e2a5b21b0
 +  display: none;
 +}
 diff --git a/components/layout/svg/hittest.rs b/components/layout/svg/hittest.rs
-index 7e9900e6654..0e271775448 100644
+index 7e9900e66543179c3f387bc5f0ee7a9536b553dd..0e271775448940299a1a001970f45000c29079f7 100644
 --- a/components/layout/svg/hittest.rs
 +++ b/components/layout/svg/hittest.rs
 @@ -10,13 +10,11 @@
@@ -464,7 +464,7 @@ index 7e9900e6654..0e271775448 100644
      fn regions_can_be_restricted() {
          let scene = tree(vec![SVGNode::Shape(SVGShape {
 diff --git a/components/layout/svg/image.rs b/components/layout/svg/image.rs
-index 6c119d145e3..05e4fc3c4d9 100644
+index 6c119d145e3effd4e35782d64ec7df08b9dad8e0..05e4fc3c4d930ef17d4c0f47ff7fa2af06b6e297 100644
 --- a/components/layout/svg/image.rs
 +++ b/components/layout/svg/image.rs
 @@ -6,100 +6,86 @@
@@ -741,7 +741,7 @@ index 6c119d145e3..05e4fc3c4d9 100644
 -    ))
 -}
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index 413ff3ec77b..34a7cbe7155 100644
+index 413ff3ec77b320fbd2b335ec412062a3ae236261..34a7cbe71558cf5c58e07fc3f726083288652b2f 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -22,8 +22,17 @@
@@ -903,7 +903,7 @@ index 413ff3ec77b..34a7cbe7155 100644
 +    NodeRenderingType::NotRendered
 +}
 diff --git a/components/layout/svg/resolve.rs b/components/layout/svg/resolve.rs
-index 194f2a5a671..30d11b97af9 100644
+index 194f2a5a671319b4121167830c7428e67dd04e53..30d11b97af94bdf89c137b0b609a8b9f3fa7050a 100644
 --- a/components/layout/svg/resolve.rs
 +++ b/components/layout/svg/resolve.rs
 @@ -19,6 +19,7 @@ use layout_api::LayoutElement as _;
@@ -986,7 +986,7 @@ index 194f2a5a671..30d11b97af9 100644
 +    }
 +}
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index 13347360063..ba3ad6dba8d 100644
+index 13347360063bdb8122c7843cd9e68009a5408410..ba3ad6dba8d78b307131a7486923b370f33f0842 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -102,7 +102,7 @@ fn build_node(

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 21:12:31 +0100
-Subject: [PATCH 12/17] layout: SVG image registry
+Subject: [PATCH 12/24] layout: SVG image registry
 
 Per-node ImageKey caching for natively painted SVG, keyed on a content
 hash of the scene, so an unchanged SVG costs nothing on reflow and an
@@ -32,7 +32,7 @@ resize repaints without rebuilding the tree.
 
 diff --git a/components/layout/svg/image.rs b/components/layout/svg/image.rs
 new file mode 100644
-index 00000000000..6c119d145e3
+index 0000000000000000000000000000000000000000..6c119d145e3effd4e35782d64ec7df08b9dad8e0
 --- /dev/null
 +++ b/components/layout/svg/image.rs
 @@ -0,0 +1,177 @@
@@ -214,7 +214,7 @@ index 00000000000..6c119d145e3
 +    ))
 +}
 diff --git a/components/layout/svg/mod.rs b/components/layout/svg/mod.rs
-index c0b822b8337..413ff3ec77b 100644
+index c0b822b833756104d1ca12678563a6e72d12db63..413ff3ec77b320fbd2b335ec412062a3ae236261 100644
 --- a/components/layout/svg/mod.rs
 +++ b/components/layout/svg/mod.rs
 @@ -27,6 +27,7 @@ use servo_config::pref;
@@ -226,7 +226,7 @@ index c0b822b8337..413ff3ec77b 100644
  pub(crate) mod paint;
  pub(crate) mod render;
 diff --git a/components/layout/svg/paint.rs b/components/layout/svg/paint.rs
-index e387654133c..d6a481a151e 100644
+index e387654133c314325e6561ba2ff85fa824a90b6b..d6a481a151e4499739c9f9443291cb93d05211b9 100644
 --- a/components/layout/svg/paint.rs
 +++ b/components/layout/svg/paint.rs
 @@ -9,7 +9,7 @@
@@ -274,7 +274,7 @@ index e387654133c..d6a481a151e 100644
      #[default]
      Miter,
 diff --git a/components/layout/svg/render.rs b/components/layout/svg/render.rs
-index 17574562c15..8382b12667c 100644
+index 17574562c15874380870eddd856d9ea82faa79f8..8382b12667c84acfafc81d96b58d5f6a794d7785 100644
 --- a/components/layout/svg/render.rs
 +++ b/components/layout/svg/render.rs
 @@ -22,15 +22,17 @@ use super::scene::{SVGGroup, SVGNode, SVGShape, SVGTree};
@@ -380,7 +380,7 @@ index 17574562c15..8382b12667c 100644
          assert_eq!(pixel(&pixmap, 1, 4).3, 255);
          assert_eq!(pixel(&pixmap, 5, 4).3, 0);
 diff --git a/components/layout/svg/scene.rs b/components/layout/svg/scene.rs
-index bd7ef4a6934..f813a282926 100644
+index bd7ef4a6934cbaed3c3e88044bb66bebcc775c9e..f813a2829261feb23bd1faccb8e612701b323542 100644
 --- a/components/layout/svg/scene.rs
 +++ b/components/layout/svg/scene.rs
 @@ -9,7 +9,9 @@
@@ -486,7 +486,7 @@ index bd7ef4a6934..f813a282926 100644
 +    }
 +}
 diff --git a/components/layout/svg/tree.rs b/components/layout/svg/tree.rs
-index ba8b6a3bc19..13347360063 100644
+index ba8b6a3bc192128a3f0506518590fe82b53abbad..13347360063bdb8122c7843cd9e68009a5408410 100644
 --- a/components/layout/svg/tree.rs
 +++ b/components/layout/svg/tree.rs
 @@ -22,45 +22,24 @@ use script::layout_dom::{ServoLayoutElement, ServoLayoutNode};

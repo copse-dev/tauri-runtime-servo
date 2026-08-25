@@ -1,7 +1,7 @@
-From a17dfe9388299a5fb6a1262783a21c66927371c8 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 22 Aug 2026 00:30:40 +0000
-Subject: [PATCH] Give embedder-registered custom schemes tuple origins
+Subject: [PATCH 08/24] Give embedder-registered custom schemes tuple origins
 
 The URL standard gives every non-special-scheme URL an opaque origin, so
 a document served over a registered custom protocol (tauri://localhost)
@@ -33,7 +33,7 @@ Claude-Session: https://claude.ai/code/session_018Jf9dnzfAnoLzptgcNbxDy
  4 files changed, 41 insertions(+), 3 deletions(-)
 
 diff --git a/Cargo.lock b/Cargo.lock
-index 02b3cb7e85..b74bbc5595 100644
+index 02b3cb7e8502c69f964ddbbd8e09cc176631f830..b74bbc55951a23b006f526797a06ed479b722bfe 100644
 --- a/Cargo.lock
 +++ b/Cargo.lock
 @@ -8308,6 +8308,7 @@ dependencies = [
@@ -45,7 +45,7 @@ index 02b3cb7e85..b74bbc5595 100644
   "data-url",
   "euclid",
 diff --git a/components/script/dom/url/urlhelper.rs b/components/script/dom/url/urlhelper.rs
-index 12dc8ee601..861fd360e4 100644
+index 12dc8ee60145759c78d08637f752245505559e55..861fd360e48f6aba9591d8bd3bdd5dd4ba22f10a 100644
 --- a/components/script/dom/url/urlhelper.rs
 +++ b/components/script/dom/url/urlhelper.rs
 @@ -15,7 +15,13 @@ pub(crate) struct UrlHelper;
@@ -64,7 +64,7 @@ index 12dc8ee601..861fd360e4 100644
      pub(crate) fn Href(url: &ServoUrl) -> USVString {
          USVString(quirks::href(url.as_url()).to_owned())
 diff --git a/components/url/lib.rs b/components/url/lib.rs
-index 6177458078..37a2ed74fa 100644
+index 617745807824ceb8d70553cc27ad8127e128b208..37a2ed74fa4a4392e0fcdf45463904bdf837167f 100644
 --- a/components/url/lib.rs
 +++ b/components/url/lib.rs
 @@ -45,7 +45,7 @@ pub fn register_secure_scheme(scheme: &str) {
@@ -77,7 +77,7 @@ index 6177458078..37a2ed74fa 100644
          .read()
          .expect("secure scheme registry poisoned")
 diff --git a/components/url/origin.rs b/components/url/origin.rs
-index 651a0182c8..f4af2ae18f 100644
+index 651a0182c83427ca769ed1f8af32f1c8dd7f42e8..f4af2ae18f15f63266f70994cb69f390af724d48 100644
 --- a/components/url/origin.rs
 +++ b/components/url/origin.rs
 @@ -52,11 +52,33 @@ impl ImmutableOrigin {
@@ -131,6 +131,3 @@ index 651a0182c8..f4af2ae18f 100644
          self.clone().into_url_origin().ascii_serialization()
      }
  }
--- 
-2.43.0
-

@@ -1,7 +1,7 @@
-From 5f358698ccf2a5bc951839f425a90863e2d6a780 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Jonathan Kingston <KingstonMailBox@gmail.com>
 Date: Fri, 21 Aug 2026 15:50:12 +0100
-Subject: [PATCH] script: Report module evaluation errors asynchronously
+Subject: [PATCH 04/24] script: Report module evaluation errors asynchronously
 
 `execute_module` passed `ModuleErrorBehaviour::ThrowModuleErrorsSync` to
 `ThrowOnModuleEvaluationFailure`, which forces the evaluation promise to
@@ -41,7 +41,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
  create mode 100644 tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js
 
 diff --git a/components/script/script_module.rs b/components/script/script_module.rs
-index fd27aac8f4..e53637a8ff 100644
+index fd27aac8f4efa2ee49ff1298bc269a7ae01785fe..e53637a8ff91bdf093096c3a3b64e09ac39f35ee 100644
 --- a/components/script/script_module.rs
 +++ b/components/script/script_module.rs
 @@ -459,17 +459,17 @@ impl ModuleTree {
@@ -68,7 +68,7 @@ index fd27aac8f4..e53637a8ff 100644
              }
          }
 diff --git a/tests/wpt/meta/MANIFEST.json b/tests/wpt/meta/MANIFEST.json
-index f506b1c837..3c92cbea46 100644
+index f506b1c8373cb1da65d9a556f190bd9a314a3ac4..3c92cbea46b968c32d82a9ad98e193a02759eb97 100644
 --- a/tests/wpt/meta/MANIFEST.json
 +++ b/tests/wpt/meta/MANIFEST.json
 @@ -598717,6 +598717,30 @@
@@ -118,7 +118,7 @@ index f506b1c837..3c92cbea46 100644
        [
 diff --git a/tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html b/tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html
 new file mode 100644
-index 0000000000..96d617b7f3
+index 0000000000000000000000000000000000000000..96d617b7f32cbc84813e055d0d3763516d968de7
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/dedicated-worker-top-level-await.html
 @@ -0,0 +1,53 @@
@@ -177,7 +177,7 @@ index 0000000000..96d617b7f3
 +</script>
 diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js
 new file mode 100644
-index 0000000000..539e11513a
+index 0000000000000000000000000000000000000000..539e11513a866bca67b61477d396bbf7a24a749c
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import-worker.js
 @@ -0,0 +1,2 @@
@@ -185,14 +185,14 @@ index 0000000000..539e11513a
 +postMessage(value);
 diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js
 new file mode 100644
-index 0000000000..18c9b55806
+index 0000000000000000000000000000000000000000..18c9b55806aaef71faa8511d212ccb3600d1ff11
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/resources/top-level-await-dynamic-import.js
 @@ -0,0 +1 @@
 +export const value = 'dynamic import';
 diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js
 new file mode 100644
-index 0000000000..cf66a51636
+index 0000000000000000000000000000000000000000..cf66a51636a175b0d35d606b8b4244b5969366ec
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/resources/top-level-await-message-worker.js
 @@ -0,0 +1,4 @@
@@ -202,14 +202,14 @@ index 0000000000..cf66a51636
 +postMessage(event.data);
 diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js
 new file mode 100644
-index 0000000000..4c39c8830a
+index 0000000000000000000000000000000000000000..4c39c8830a2cee4cc2c01f923c1464ae124aa98b
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/resources/top-level-await-rejection-worker.js
 @@ -0,0 +1 @@
 +await Promise.reject(new Error('top-level await rejection'));
 diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js
 new file mode 100644
-index 0000000000..f1c4e9bb7f
+index 0000000000000000000000000000000000000000..f1c4e9bb7ff2e67dbdd05fc33ba2e27c20c17a40
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import-worker.js
 @@ -0,0 +1,4 @@
@@ -219,11 +219,8 @@ index 0000000000..f1c4e9bb7f
 +postMessage(value);
 diff --git a/tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js
 new file mode 100644
-index 0000000000..7e2f2b676c
+index 0000000000000000000000000000000000000000..7e2f2b676c71e31eb0e368c3e93fecec99a017f1
 --- /dev/null
 +++ b/tests/wpt/tests/workers/modules/resources/top-level-await-static-import.js
 @@ -0,0 +1 @@
 +export const value = 'static import';
--- 
-2.43.0
-
